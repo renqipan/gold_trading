@@ -1,0 +1,339 @@
+import latest from "../public/data/gold_research_latest.json";
+import priceSeries from "../public/data/gold_price_series.json";
+import backtestSeries from "../public/data/gold_backtest.json";
+
+type Point = {
+  date: string;
+  close: number;
+  sma_20?: number | null;
+  sma_60?: number | null;
+  sma_120?: number | null;
+  state?: string;
+  stateCode?: string;
+  pUp30d?: number;
+  position?: number;
+  guide?: string;
+  atrStop?: number | null;
+};
+
+type BacktestPoint = {
+  date: string;
+  equity: number;
+  benchmark_equity: number;
+  drawdown: number;
+  position: number;
+};
+
+const prices = priceSeries as Point[];
+const backtest = backtestSeries as BacktestPoint[];
+
+function pct(value: number, digits = 1) {
+  return `${(value * 100).toFixed(digits)}%`;
+}
+
+function num(value: number, digits = 2) {
+  return new Intl.NumberFormat("zh-CN", {
+    maximumFractionDigits: digits,
+    minimumFractionDigits: digits,
+  }).format(value);
+}
+
+function linePath(values: number[], width: number, height: number, padding = 12) {
+  const clean = values.filter((value) => Number.isFinite(value));
+  const min = Math.min(...clean);
+  const max = Math.max(...clean);
+  const spread = max - min || 1;
+  return values
+    .map((value, index) => {
+      const x = padding + (index / Math.max(values.length - 1, 1)) * (width - padding * 2);
+      const y = height - padding - ((value - min) / spread) * (height - padding * 2);
+      return `${index === 0 ? "M" : "L"}${x.toFixed(2)},${y.toFixed(2)}`;
+    })
+    .join(" ");
+}
+
+function areaPath(values: number[], width: number, height: number, padding = 12) {
+  const path = linePath(values, width, height, padding);
+  return `${path} L${width - padding},${height - padding} L${padding},${height - padding} Z`;
+}
+
+function stateClass(stateCode?: string) {
+  if (stateCode === "s1") return "stateBull";
+  if (stateCode === "s2") return "stateBear";
+  if (stateCode === "s4") return "statePanic";
+  return "stateRange";
+}
+
+function actionClass(action: string) {
+  if (action.includes("买入")) return "buy";
+  if (action.includes("卖出")) return "sell";
+  return "watch";
+}
+
+function PriceChart() {
+  const recent = prices.slice(-360);
+  const closePath = linePath(
+    recent.map((point) => point.close),
+    960,
+    360,
+    24,
+  );
+  const area = areaPath(
+    recent.map((point) => point.close),
+    960,
+    360,
+    24,
+  );
+  const sma60 = recent
+    .map((point) => point.sma_60)
+    .filter((value): value is number => typeof value === "number");
+  const smaPath =
+    sma60.length === recent.length
+      ? linePath(
+          recent.map((point) => point.sma_60 as number),
+          960,
+          360,
+          24,
+        )
+      : "";
+  const min = Math.min(...recent.map((point) => point.close));
+  const max = Math.max(...recent.map((point) => point.close));
+
+  return (
+    <section className="panel wide">
+      <div className="sectionHead">
+        <div>
+          <p className="eyebrow">价格走势</p>
+          <h2>黄金近 360 个交易日</h2>
+        </div>
+        <div className="chartScale">
+          <span>高 {num(max, 0)}</span>
+          <span>低 {num(min, 0)}</span>
+        </div>
+      </div>
+      <svg className="priceChart" viewBox="0 0 960 360" role="img" aria-label="黄金价格走势图">
+        <path d={area} className="chartArea" />
+        <path d={closePath} className="chartLine" />
+        {smaPath ? <path d={smaPath} className="maLine" /> : null}
+        {recent.map((point, index) => {
+          if (index % 28 !== 0) return null;
+          return (
+            <line
+              key={point.date}
+              x1={24 + (index / Math.max(recent.length - 1, 1)) * (960 - 48)}
+              x2={24 + (index / Math.max(recent.length - 1, 1)) * (960 - 48)}
+              y1="24"
+              y2="336"
+              className="gridLine"
+            />
+          );
+        })}
+      </svg>
+      <div className="legend">
+        <span><i className="legendClose" />收盘价</span>
+        <span><i className="legendMa" />60 日均线</span>
+        <span>数据截至 {latest.asOf}</span>
+      </div>
+    </section>
+  );
+}
+
+function EquityChart() {
+  const recent = backtest;
+  const strategyPath = linePath(
+    recent.map((point) => point.equity),
+    720,
+    260,
+    22,
+  );
+  const benchmarkPath = linePath(
+    recent.map((point) => point.benchmark_equity),
+    720,
+    260,
+    22,
+  );
+
+  return (
+    <section className="panel">
+      <div className="sectionHead">
+        <div>
+          <p className="eyebrow">样本外回测</p>
+          <h2>策略净值 vs 买入持有</h2>
+        </div>
+      </div>
+      <svg className="equityChart" viewBox="0 0 720 260" role="img" aria-label="回测净值曲线">
+        <path d={benchmarkPath} className="benchmarkLine" />
+        <path d={strategyPath} className="equityLine" />
+      </svg>
+      <div className="legend">
+        <span><i className="legendEquity" />策略</span>
+        <span><i className="legendBench" />买入持有</span>
+      </div>
+    </section>
+  );
+}
+
+function StateTape() {
+  const recent = prices.slice(-120);
+  return (
+    <section className="panel">
+      <div className="sectionHead">
+        <div>
+          <p className="eyebrow">HMM 状态</p>
+          <h2>近 120 日状态带</h2>
+        </div>
+      </div>
+      <div className="stateTape" aria-label="HMM 市场状态时间轴">
+        {recent.map((point) => (
+          <span
+            key={point.date}
+            className={`stateBlock ${stateClass(point.stateCode)}`}
+            title={`${point.date} ${point.state}`}
+          />
+        ))}
+      </div>
+      <div className="stateLegend">
+        <span><i className="stateBull" />牛市</span>
+        <span><i className="stateBear" />熊市</span>
+        <span><i className="stateRange" />震荡</span>
+        <span><i className="statePanic" />恐慌</span>
+      </div>
+    </section>
+  );
+}
+
+function MetricCard({
+  label,
+  value,
+  detail,
+}: {
+  label: string;
+  value: string;
+  detail: string;
+}) {
+  return (
+    <div className="metric">
+      <p>{label}</p>
+      <strong>{value}</strong>
+      <span>{detail}</span>
+    </div>
+  );
+}
+
+export default function Home() {
+  const guide = latest.guide;
+  const latestPoint = prices[prices.length - 1];
+  const previousPoint = prices[prices.length - 2];
+  const oneDay = latestPoint.close / previousPoint.close - 1;
+
+  return (
+    <main>
+      <section className="hero">
+        <nav className="topbar">
+          <div className="brand">
+            <span>Au</span>
+            黄金交易研究站
+          </div>
+          <div className="navMeta">HMM + XGBoost · {latest.asOf}</div>
+        </nav>
+
+        <div className="heroGrid">
+          <div className="decision">
+            <p className="eyebrow">今日操作</p>
+            <h1 className={actionClass(guide)}>{guide}</h1>
+            <p className="decisionCopy">
+              当前 HMM 状态为 {latest.marketStateCode}={latest.marketState}，
+              XGBoost 预测未来 30 个交易日上涨概率为 {pct(latest.pUp30d, 1)}。
+            </p>
+            <div className="decisionMeta">
+              <span>买入阈值 {pct(latest.thresholds.buyAbove, 0)}</span>
+              <span>卖出阈值 {pct(latest.thresholds.sellBelow, 0)}</span>
+              <span>建议仓位 {pct(latest.position, 1)}</span>
+            </div>
+          </div>
+
+          <div className="snapshot">
+            <MetricCard label="黄金价格" value={num(latest.price, 2)} detail={`日变化 ${pct(oneDay, 2)}`} />
+            <MetricCard label="ATR 止损线" value={latest.atrStop ? num(latest.atrStop, 2) : "无"} detail={`ATR/价格 ${pct(latest.atrPct, 2)}`} />
+            <MetricCard label="样本外 Sharpe" value={num(latest.backtestMetrics.sharpe, 2)} detail={`最大回撤 ${pct(latest.backtestMetrics.max_drawdown, 1)}`} />
+            <MetricCard label="模型 AUC" value={num(latest.modelMetrics.test_auc, 2)} detail={`Brier ${num(latest.modelMetrics.test_brier, 2)}`} />
+          </div>
+        </div>
+      </section>
+
+      <section className="contentGrid">
+        <PriceChart />
+        <StateTape />
+        <EquityChart />
+
+        <section className="panel">
+          <div className="sectionHead">
+            <div>
+              <p className="eyebrow">交易框架</p>
+              <h2>信号规则</h2>
+            </div>
+          </div>
+          <div className="rules">
+            <p><strong>P &gt; {pct(latest.thresholds.buyAbove, 0)}</strong><span>做多黄金，仓位由 1/4 Kelly 与 ATR 风险约束共同决定。</span></p>
+            <p><strong>P &lt; {pct(latest.thresholds.sellBelow, 0)}</strong><span>卖出或空仓，等待新的高胜率区间。</span></p>
+            <p><strong>区间内</strong><span>不新增交易，已有仓位按 10-60 日持仓窗口和 ATR 止损管理。</span></p>
+          </div>
+        </section>
+
+        <section className="panel">
+          <div className="sectionHead">
+            <div>
+              <p className="eyebrow">风险约束</p>
+              <h2>仓位与止损</h2>
+            </div>
+          </div>
+          <div className="riskList">
+            <span>最大仓位 {pct(latest.risk.max_position, 0)}</span>
+            <span>最大单笔风险 {pct(latest.risk.max_single_loss, 0)}</span>
+            <span>最大杠杆 {latest.risk.max_leverage.toFixed(1)}x</span>
+            <span>ATR 倍数 {latest.risk.atr_multiple.toFixed(1)}</span>
+            <span>持仓周期 {latest.risk.min_holding_days}-{latest.risk.max_holding_days} 天</span>
+          </div>
+        </section>
+
+        <section className="panel">
+          <div className="sectionHead">
+            <div>
+              <p className="eyebrow">特征贡献</p>
+              <h2>XGBoost Top 10</h2>
+            </div>
+          </div>
+          <div className="featureList">
+            {latest.topFeatures.map((item) => (
+              <div key={item.feature} className="featureRow">
+                <span>{item.feature}</span>
+                <div>
+                  <i style={{ width: `${Math.max(item.importance * 2600, 8)}px` }} />
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="panel wide notes">
+          <div className="sectionHead">
+            <div>
+              <p className="eyebrow">研究说明</p>
+              <h2>数据口径与限制</h2>
+            </div>
+          </div>
+          <div className="noteGrid">
+            {latest.notes.map((note) => (
+              <p key={note}>{note}</p>
+            ))}
+            <p>
+              回测采用时间序列切分后的样本外区间，模型指标偏弱时应降低信号置信度；
+              本页面用于研究复盘，不构成任何投资建议。
+            </p>
+          </div>
+        </section>
+      </section>
+    </main>
+  );
+}
+

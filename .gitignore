@@ -1,0 +1,21 @@
+.DS_Store
+node_modules/
+.next/
+out/
+dist/
+.env
+.env.*
+!.env.example
+
+# Local-only quantitative research code, data, models, and logs.
+research/
+.venv-research/
+local_logs/
+data/raw/
+data/interim/
+data/models/
+
+# Python caches
+__pycache__/
+*.py[cod]
+

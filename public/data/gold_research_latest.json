@@ -1,0 +1,112 @@
+{
+  "asOf": "2026-06-12",
+  "asset": "黄金连续合约 QO00Y",
+  "price": 4229.0,
+  "dailyChange": -0.001003956770802561,
+  "pUp30d": 0.5890808701515198,
+  "marketStateCode": "s2",
+  "marketState": "熊市",
+  "guide": "买入",
+  "rawSignal": "long",
+  "position": 0.08996209066842943,
+  "atrStop": 4030.7321428571427,
+  "atrPct": 0.02831216430767152,
+  "thresholds": {
+    "buyAbove": 0.58,
+    "sellBelow": 0.46
+  },
+  "risk": {
+    "up_threshold": 0.58,
+    "down_threshold": 0.46,
+    "max_position": 0.35,
+    "max_leverage": 1.0,
+    "max_single_loss": 0.02,
+    "max_drawdown_soft": 0.15,
+    "max_drawdown_hard": 0.22,
+    "atr_window": 14,
+    "atr_multiple": 2.5,
+    "min_holding_days": 10,
+    "max_holding_days": 60,
+    "kelly_fraction": 0.25
+  },
+  "modelMetrics": {
+    "test_accuracy_0_5": 0.4029990627928772,
+    "test_brier": 0.3875305950641632,
+    "test_auc": 0.4157717736079795
+  },
+  "backtestMetrics": {
+    "total_return": 0.05143885642748591,
+    "benchmark_return": 1.3168899461625152,
+    "annual_return": 0.011916942972048261,
+    "annual_vol": 0.018890774199354823,
+    "sharpe": 0.6308340169803767,
+    "max_drawdown": -0.04390405620336579,
+    "active_day_ratio": 0.4208059981255858,
+    "daily_win_rate_when_active": 0.5123042505592841
+  },
+  "topFeatures": [
+    {
+      "feature": "spx_volume",
+      "importance": 0.02826535329222679
+    },
+    {
+      "feature": "cot_gold_net",
+      "importance": 0.025792518630623817
+    },
+    {
+      "feature": "drawdown_120",
+      "importance": 0.024997418746352196
+    },
+    {
+      "feature": "sma_30",
+      "importance": 0.023876508697867393
+    },
+    {
+      "feature": "dxy_open",
+      "importance": 0.023390091955661774
+    },
+    {
+      "feature": "gold_volume",
+      "importance": 0.0214240625500679
+    },
+    {
+      "feature": "us_cpi_yoy",
+      "importance": 0.021307004615664482
+    },
+    {
+      "feature": "gld_high",
+      "importance": 0.020796841010451317
+    },
+    {
+      "feature": "cot_gold_short",
+      "importance": 0.02066880837082863
+    },
+    {
+      "feature": "spx_high",
+      "importance": 0.02062968723475933
+    }
+  ],
+  "stateMapping": {
+    "2": "牛市",
+    "1": "熊市",
+    "3": "震荡",
+    "0": "恐慌"
+  },
+  "sources": {
+    "gold": "Eastmoney 101.QO00Y: COMEX mini gold continuous proxy",
+    "dxy": "Eastmoney 100.UDI: US Dollar Index",
+    "us10y": "Eastmoney 171.US10Y: US 10Y Treasury yield",
+    "gld": "Eastmoney 107.GLD: SPDR Gold Shares ETF",
+    "vixy": "Eastmoney 107.VIXY: VIX futures ETF proxy",
+    "spx": "Eastmoney 100.SPX: S&P 500 index",
+    "cpi": "AkShare Jin10 US CPI YoY",
+    "cot": "AkShare Jin10 CFTC gold positioning",
+    "real_rate_proxy": "US10Y yield minus US CPI YoY"
+  },
+  "notes": [
+    "VIX 使用 VIXY ETF 作为风险代理。",
+    "实际利率使用 US10Y 减美国 CPI 同比作为 proxy。",
+    "ETF 资金流使用 GLD 成交额的量价方向 proxy。",
+    "研究结果不构成投资建议。"
+  ]
+}
