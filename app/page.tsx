@@ -5,6 +5,7 @@ import backtestSeries from "../public/data/gold_backtest.json";
 type Point = {
   date: string;
   close: number;
+  sma_5?: number | null;
   sma_20?: number | null;
   sma_60?: number | null;
   sma_120?: number | null;
@@ -38,10 +39,10 @@ function num(value: number, digits = 2) {
   }).format(value);
 }
 
-function linePath(values: number[], width: number, height: number, padding = 12) {
+function linePath(values: number[], width: number, height: number, padding = 12, domain?: [number, number]) {
   const clean = values.filter((value) => Number.isFinite(value));
-  const min = Math.min(...clean);
-  const max = Math.max(...clean);
+  const min = domain ? domain[0] : Math.min(...clean);
+  const max = domain ? domain[1] : Math.max(...clean);
   const spread = max - min || 1;
   return values
     .map((value, index) => {
@@ -52,8 +53,8 @@ function linePath(values: number[], width: number, height: number, padding = 12)
     .join(" ");
 }
 
-function areaPath(values: number[], width: number, height: number, padding = 12) {
-  const path = linePath(values, width, height, padding);
+function areaPath(values: number[], width: number, height: number, padding = 12, domain?: [number, number]) {
+  const path = linePath(values, width, height, padding, domain);
   return `${path} L${width - padding},${height - padding} L${padding},${height - padding} Z`;
 }
 
@@ -72,30 +73,30 @@ function actionClass(action: string) {
 
 function PriceChart() {
   const recent = prices.slice(-360);
+  const priceDomainValues = recent.flatMap((point) => [
+    point.close,
+    point.sma_5,
+    point.sma_20,
+    point.sma_60,
+  ]).filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  const domain: [number, number] = [Math.min(...priceDomainValues), Math.max(...priceDomainValues)];
   const closePath = linePath(
     recent.map((point) => point.close),
     960,
     360,
     24,
+    domain,
   );
   const area = areaPath(
     recent.map((point) => point.close),
     960,
     360,
     24,
+    domain,
   );
-  const sma60 = recent
-    .map((point) => point.sma_60)
-    .filter((value): value is number => typeof value === "number");
-  const smaPath =
-    sma60.length === recent.length
-      ? linePath(
-          recent.map((point) => point.sma_60 as number),
-          960,
-          360,
-          24,
-        )
-      : "";
+  const sma5Path = linePath(recent.map((point) => point.sma_5 as number), 960, 360, 24, domain);
+  const sma20Path = linePath(recent.map((point) => point.sma_20 as number), 960, 360, 24, domain);
+  const sma60Path = linePath(recent.map((point) => point.sma_60 as number), 960, 360, 24, domain);
   const min = Math.min(...recent.map((point) => point.close));
   const max = Math.max(...recent.map((point) => point.close));
 
@@ -114,7 +115,9 @@ function PriceChart() {
       <svg className="priceChart" viewBox="0 0 960 360" role="img" aria-label="黄金价格走势图">
         <path d={area} className="chartArea" />
         <path d={closePath} className="chartLine" />
-        {smaPath ? <path d={smaPath} className="maLine" /> : null}
+        <path d={sma5Path} className="maLine ma5Line" />
+        <path d={sma20Path} className="maLine ma20Line" />
+        <path d={sma60Path} className="maLine ma60Line" />
         {recent.map((point, index) => {
           if (index % 28 !== 0) return null;
           return (
@@ -131,7 +134,9 @@ function PriceChart() {
       </svg>
       <div className="legend">
         <span><i className="legendClose" />收盘价</span>
-        <span><i className="legendMa" />60 日均线</span>
+        <span><i className="legendMa5" />5 日均线</span>
+        <span><i className="legendMa20" />20 日均线</span>
+        <span><i className="legendMa60" />60 日均线</span>
         <span>数据截至 {latest.asOf}</span>
       </div>
     </section>
@@ -140,17 +145,21 @@ function PriceChart() {
 
 function EquityChart() {
   const recent = backtest;
+  const domainValues = recent.flatMap((point) => [point.equity, point.benchmark_equity]);
+  const domain: [number, number] = [Math.min(...domainValues), Math.max(...domainValues)];
   const strategyPath = linePath(
     recent.map((point) => point.equity),
     720,
     260,
     22,
+    domain,
   );
   const benchmarkPath = linePath(
     recent.map((point) => point.benchmark_equity),
     720,
     260,
     22,
+    domain,
   );
 
   return (
@@ -242,7 +251,7 @@ export default function Home() {
             <p className="eyebrow">今日操作</p>
             <h1 className={actionClass(guide)}>{guide}</h1>
             <p className="decisionCopy">
-              当前 HMM 状态为 {latest.marketStateCode}={latest.marketState}，
+              当前 HMM 状态为{latest.marketState}，
               XGBoost 预测未来 30 个交易日上涨概率为 {pct(latest.pUp30d, 1)}。
             </p>
             <div className="decisionMeta">
@@ -253,7 +262,7 @@ export default function Home() {
           </div>
 
           <div className="snapshot">
-            <MetricCard label="黄金价格" value={num(latest.price, 2)} detail={`日变化 ${pct(oneDay, 2)}`} />
+            <MetricCard label="黄金价格" value={num(latest.price, 2)} detail={`${latest.asset} · 日变化 ${pct(oneDay, 2)}`} />
             <MetricCard label="ATR 止损线" value={latest.atrStop ? num(latest.atrStop, 2) : "无"} detail={`ATR/价格 ${pct(latest.atrPct, 2)}`} />
             <MetricCard label="样本外 Sharpe" value={num(latest.backtestMetrics.sharpe, 2)} detail={`最大回撤 ${pct(latest.backtestMetrics.max_drawdown, 1)}`} />
             <MetricCard label="模型 AUC" value={num(latest.modelMetrics.test_auc, 2)} detail={`Brier ${num(latest.modelMetrics.test_brier, 2)}`} />
@@ -274,9 +283,9 @@ export default function Home() {
             </div>
           </div>
           <div className="rules">
-            <p><strong>P &gt; {pct(latest.thresholds.buyAbove, 0)}</strong><span>做多黄金，仓位由 1/4 Kelly 与 ATR 风险约束共同决定。</span></p>
-            <p><strong>P &lt; {pct(latest.thresholds.sellBelow, 0)}</strong><span>卖出或空仓，等待新的高胜率区间。</span></p>
-            <p><strong>区间内</strong><span>不新增交易，已有仓位按 10-60 日持仓窗口和 ATR 止损管理。</span></p>
+            <p><strong>P &gt; {pct(latest.thresholds.buyAbove, 0)}</strong><span>买入或加仓，且需要趋势未明显破坏；仓位由 1 倍 Kelly 与 ATR 风险约束共同决定。</span></p>
+            <p><strong>P &lt; {pct(latest.thresholds.sellBelow, 0)}</strong><span>只有概率低位并伴随熊市/恐慌或趋势破位时卖出，避免日内噪音触发频繁交易。</span></p>
+            <p><strong>区间内</strong><span>不新增交易，已有仓位继续持有；10-60 天只是参考持仓周期，不作为强制退出条件。</span></p>
           </div>
         </section>
 
@@ -292,7 +301,8 @@ export default function Home() {
             <span>最大单笔风险 {pct(latest.risk.max_single_loss, 0)}</span>
             <span>最大杠杆 {latest.risk.max_leverage.toFixed(1)}x</span>
             <span>ATR 倍数 {latest.risk.atr_multiple.toFixed(1)}</span>
-            <span>持仓周期 {latest.risk.min_holding_days}-{latest.risk.max_holding_days} 天</span>
+            <span>参考周期 {latest.risk.reference_holding_days_low}-{latest.risk.reference_holding_days_high} 天</span>
+            <span>Kelly 倍数 {latest.risk.kelly_fraction.toFixed(1)}x</span>
           </div>
         </section>
 
@@ -315,20 +325,25 @@ export default function Home() {
           </div>
         </section>
 
-        <section className="panel wide notes">
+        <section className="panel wide disclaimer">
           <div className="sectionHead">
             <div>
-              <p className="eyebrow">研究说明</p>
-              <h2>数据口径与限制</h2>
+              <p className="eyebrow">免责声明</p>
+              <h2>仅用于研究复盘，不构成投资建议</h2>
             </div>
           </div>
-          <div className="noteGrid">
-            {latest.notes.map((note) => (
-              <p key={note}>{note}</p>
-            ))}
+          <div className="disclaimerGrid">
             <p>
-              回测采用时间序列切分后的样本外区间，模型指标偏弱时应降低信号置信度；
-              本页面用于研究复盘，不构成任何投资建议。
+              本页面展示的是历史数据驱动的量化研究结果，模型信号可能失效，
+              不应被理解为对黄金、期货、ETF 或任何金融产品的买卖建议。
+            </p>
+            <p>
+              黄金价格采用 {latest.asset}；VIX、实际利率和 ETF 资金流中存在 proxy 因子，
+              回测结果受数据源、交易成本、滑点和模型设定影响。
+            </p>
+            <p>
+              任何真实交易都需要结合账户风险承受能力、流动性、保证金规则和独立判断。
+              使用者需自行承担投资风险。
             </p>
           </div>
         </section>
@@ -336,4 +351,3 @@ export default function Home() {
     </main>
   );
 }
-
