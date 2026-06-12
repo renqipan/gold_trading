@@ -12,6 +12,7 @@ type Point = {
   state?: string;
   stateCode?: string;
   pUp30d?: number;
+  pUpHorizon?: number;
   position?: number;
   guide?: string;
   atrStop?: number | null;
@@ -234,6 +235,8 @@ export default function Home() {
   const latestPoint = prices[prices.length - 1];
   const previousPoint = prices[prices.length - 2];
   const oneDay = latestPoint.close / previousPoint.close - 1;
+  const horizonDays = latest.predictionHorizonDays ?? 30;
+  const modelProbability = latest.pUpHorizon ?? latest.pUp30d;
 
   return (
     <main>
@@ -252,7 +255,7 @@ export default function Home() {
             <h1 className={actionClass(guide)}>{guide}</h1>
             <p className="decisionCopy">
               当前 HMM 状态为{latest.marketState}，
-              XGBoost 预测未来 30 个交易日上涨概率为 {pct(latest.pUp30d, 1)}。
+              XGBoost 预测未来 {horizonDays} 个交易日上涨概率为 {pct(modelProbability, 1)}。
             </p>
             <div className="decisionMeta">
               <span>买入阈值 {pct(latest.thresholds.buyAbove, 0)}</span>

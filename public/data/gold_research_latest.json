@@ -4,7 +4,9 @@
   "assetDetail": "东方财富国际期货 secid=101.QO00Y，作为黄金价格主序列",
   "price": 4224.5,
   "dailyChange": -0.0020669698222406385,
-  "pUp30d": 0.24508607387542725,
+  "pUp30d": 0.30552154779434204,
+  "pUpHorizon": 0.30552154779434204,
+  "predictionHorizonDays": 45,
   "marketStateCode": "s2",
   "marketState": "熊市",
   "guide": "卖出/空仓",
@@ -17,8 +19,11 @@
     "sellBelow": 0.36
   },
   "risk": {
+    "prediction_horizon_days": 45,
     "up_threshold": 0.6,
     "down_threshold": 0.36,
+    "entry_floor": 0.42,
+    "trend_prior_probability": 0.6,
     "max_position": 0.95,
     "max_leverage": 1.0,
     "max_single_loss": 0.06,
@@ -33,84 +38,84 @@
     "label_purge_days": 30
   },
   "modelMetrics": {
-    "test_accuracy_0_5": 0.497624703087886,
-    "test_brier": 0.27253769217865464,
-    "validation_auc_raw": 0.44123124360794375,
+    "test_accuracy_0_5": 0.4928400954653938,
+    "test_brier": 0.28617050951885525,
+    "validation_auc_raw": 0.3378493129535279,
     "probability_orientation": "inverted_by_validation",
-    "walk_forward_folds": 66,
-    "test_auc": 0.5158204487426942
+    "walk_forward_folds": 67,
+    "test_auc": 0.583894449499545
   },
   "backtestMetrics": {
-    "total_return": 0.21215453471712298,
-    "benchmark_return": 1.386510188289912,
-    "annual_return": 0.05927288301353162,
-    "annual_vol": 0.0694928190149055,
-    "sharpe": 0.852935365894686,
-    "max_drawdown": -0.05960691876041313,
-    "active_day_ratio": 0.6781472684085511,
-    "daily_win_rate_when_active": 0.5280701754385965
+    "total_return": 0.4289185773795525,
+    "benchmark_return": 1.543637574950043,
+    "annual_return": 0.11330261363619876,
+    "annual_vol": 0.0736116988085722,
+    "sharpe": 1.5391930286902236,
+    "max_drawdown": -0.04256970102248958,
+    "active_day_ratio": 0.8210023866348448,
+    "daily_win_rate_when_active": 0.5458515283842795
   },
   "topFeatures": [
     {
       "feature": "cot_gold_short",
-      "importance": 0.04336385056376457
-    },
-    {
-      "feature": "cot_gold_net",
-      "importance": 0.04302574321627617
-    },
-    {
-      "feature": "hmm_prob_s2",
-      "importance": 0.03553649038076401
-    },
-    {
-      "feature": "drawdown_120",
-      "importance": 0.028512977063655853
+      "importance": 0.043071094900369644
     },
     {
       "feature": "cot_gold_long_short_ratio",
-      "importance": 0.02690446376800537
+      "importance": 0.036267057061195374
     },
     {
-      "feature": "ret_30",
-      "importance": 0.026509029790759087
+      "feature": "high_breakout_120",
+      "importance": 0.03508260101079941
     },
     {
-      "feature": "sma_gap_180",
-      "importance": 0.026339203119277954
+      "feature": "drawdown_120",
+      "importance": 0.03476046398282051
+    },
+    {
+      "feature": "ret_120",
+      "importance": 0.03459810093045235
+    },
+    {
+      "feature": "cot_gold_net",
+      "importance": 0.03350081294775009
     },
     {
       "feature": "cot_gold_long",
-      "importance": 0.02513241022825241
+      "importance": 0.029891103506088257
     },
     {
-      "feature": "spx_change_20",
-      "importance": 0.024991462007164955
+      "feature": "trend_strength",
+      "importance": 0.027969663962721825
     },
     {
-      "feature": "ret_180",
-      "importance": 0.02466491609811783
+      "feature": "sma_gap_180",
+      "importance": 0.02751762606203556
+    },
+    {
+      "feature": "low_breakdown_120",
+      "importance": 0.02652275562286377
     }
   ],
   "stateMapping": {
-    "2": "牛市",
+    "1": "牛市",
     "0": "熊市",
-    "3": "震荡",
-    "1": "恐慌"
+    "2": "震荡",
+    "3": "恐慌"
   },
   "sources": {
     "gold": "Eastmoney 101.QO00Y: COMEX mini gold continuous proxy (cached fallback after refresh failure); OHLC repaired rows=8",
     "dxy": "Eastmoney 100.UDI: US Dollar Index (cached fallback after refresh failure); OHLC repaired rows=2",
     "us10y": "Eastmoney 171.US10Y: US 10Y Treasury yield (cached fallback after refresh failure)",
-    "gld": "Eastmoney 107.GLD: SPDR Gold Shares ETF (cached fallback after refresh failure)",
-    "vixy": "Eastmoney 107.VIXY: VIX futures ETF proxy (cached fallback after refresh failure)",
-    "spx": "Eastmoney 100.SPX: S&P 500 index (cached fallback after refresh failure)",
+    "gld": "Eastmoney 107.GLD: SPDR Gold Shares ETF",
+    "vixy": "Eastmoney 107.VIXY: VIX futures ETF proxy",
+    "spx": "Eastmoney 100.SPX: S&P 500 index",
     "cpi": "AkShare Jin10 US CPI YoY",
     "cot": "AkShare Jin10 CFTC gold positioning",
     "real_rate_proxy": "US10Y yield minus US CPI YoY"
   },
   "dataQuality": {
-    "generatedAt": "2026-06-12T13:53:25Z",
+    "generatedAt": "2026-06-12T14:13:13Z",
     "passed": true,
     "checks": {
       "gold": {
@@ -139,37 +144,37 @@
         "rows": 799,
         "start": "2023-05-08",
         "end": "2026-06-12",
-        "latestClose": 4.4967,
+        "latestClose": 4.4948,
         "missingClose": 2460,
         "invalidOhlcRows": 0
       },
       "gld": {
         "available": true,
-        "source": "Eastmoney 107.GLD: SPDR Gold Shares ETF (cached fallback after refresh failure)",
+        "source": "Eastmoney 107.GLD: SPDR Gold Shares ETF",
         "rows": 3259,
         "start": "2013-06-25",
         "end": "2026-06-12",
-        "latestClose": 384.59,
+        "latestClose": 384.74,
         "missingClose": 0,
         "invalidOhlcRows": 0
       },
       "vixy": {
         "available": true,
-        "source": "Eastmoney 107.VIXY: VIX futures ETF proxy (cached fallback after refresh failure)",
+        "source": "Eastmoney 107.VIXY: VIX futures ETF proxy",
         "rows": 3259,
         "start": "2013-06-25",
         "end": "2026-06-12",
-        "latestClose": 24.37,
+        "latestClose": 23.97,
         "missingClose": 0,
         "invalidOhlcRows": 0
       },
       "spx": {
         "available": true,
-        "source": "Eastmoney 100.SPX: S&P 500 index (cached fallback after refresh failure)",
+        "source": "Eastmoney 100.SPX: S&P 500 index",
         "rows": 3259,
         "start": "2013-06-25",
         "end": "2026-06-12",
-        "latestClose": 7379.2,
+        "latestClose": 7406.29,
         "missingClose": 0,
         "invalidOhlcRows": 0
       },
@@ -203,6 +208,7 @@
     "VIX 使用 VIXY ETF 作为风险代理。",
     "实际利率使用 US10Y 减美国 CPI 同比作为 proxy。",
     "ETF 资金流使用 GLD 成交额的量价方向 proxy。",
+    "XGBoost 当前预测 horizon 为未来 45 个交易日。",
     "研究结果不构成投资建议。"
   ]
 }
