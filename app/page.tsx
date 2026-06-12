@@ -236,7 +236,8 @@ export default function Home() {
   const previousPoint = prices[prices.length - 2];
   const oneDay = latestPoint.close / previousPoint.close - 1;
   const horizonDays = latest.predictionHorizonDays ?? 30;
-  const modelProbability = latest.pUpHorizon ?? latest.pUp30d;
+  const modelProbability = latest.pProfitFirst ?? latest.pUpHorizon ?? latest.pUp30d;
+  const rawAuc = latest.modelMetrics.raw_test_auc ?? latest.modelMetrics.test_auc;
 
   return (
     <main>
@@ -255,20 +256,20 @@ export default function Home() {
             <h1 className={actionClass(guide)}>{guide}</h1>
             <p className="decisionCopy">
               当前 HMM 状态为{latest.marketState}，
-              XGBoost 预测未来 {horizonDays} 个交易日上涨概率为 {pct(modelProbability, 1)}。
+              XGBoost 估计该趋势候选交易先触发止盈的概率/评分为 {pct(modelProbability, 1)}。
             </p>
             <div className="decisionMeta">
-              <span>买入阈值 {pct(latest.thresholds.buyAbove, 0)}</span>
-              <span>卖出阈值 {pct(latest.thresholds.sellBelow, 0)}</span>
+              <span>入场阈值 {pct(latest.thresholds.buyAbove, 0)}</span>
+              <span>{horizonDays} 日屏障</span>
               <span>建议仓位 {pct(latest.position, 1)}</span>
             </div>
           </div>
 
           <div className="snapshot">
             <MetricCard label="黄金价格" value={num(latest.price, 2)} detail={`${latest.asset} · 日变化 ${pct(oneDay, 2)}`} />
-            <MetricCard label="ATR 止损线" value={latest.atrStop ? num(latest.atrStop, 2) : "无"} detail={`ATR/价格 ${pct(latest.atrPct, 2)}`} />
+            <MetricCard label="ATR 止损线" value={latest.atrStop ? num(latest.atrStop, 2) : "无"} detail={`止盈 ${latest.risk.profit_atr_multiple.toFixed(0)} ATR · 止损 ${latest.risk.stop_atr_multiple.toFixed(0)} ATR`} />
             <MetricCard label="样本外 Sharpe" value={num(latest.backtestMetrics.sharpe, 2)} detail={`最大回撤 ${pct(latest.backtestMetrics.max_drawdown, 1)}`} />
-            <MetricCard label="模型 AUC" value={num(latest.modelMetrics.test_auc, 2)} detail={`Brier ${num(latest.modelMetrics.test_brier, 2)}`} />
+            <MetricCard label="Raw AUC" value={num(rawAuc, 2)} detail={`测试期交易动作 ${latest.backtestMetrics.test_trades}`} />
           </div>
         </div>
       </section>
@@ -286,9 +287,9 @@ export default function Home() {
             </div>
           </div>
           <div className="rules">
-            <p><strong>P &gt; {pct(latest.thresholds.buyAbove, 0)}</strong><span>买入或加仓，且需要趋势未明显破坏；仓位由 1 倍 Kelly 与 ATR 风险约束共同决定。</span></p>
-            <p><strong>P &lt; {pct(latest.thresholds.sellBelow, 0)}</strong><span>只有概率低位并伴随熊市/恐慌或趋势破位时卖出，避免日内噪音触发频繁交易。</span></p>
-            <p><strong>区间内</strong><span>不新增交易，已有仓位继续持有；10-60 天只是参考持仓周期，不作为强制退出条件。</span></p>
+            <p><strong>趋势事件</strong><span>当慢趋势成立时，每 {latest.risk.meta_event_gap_days} 个交易日生成一次候选交易事件。</span></p>
+            <p><strong>Meta P &gt; {pct(latest.thresholds.buyAbove, 0)}</strong><span>XGBoost 判断候选交易质量足够高时，以最高 {pct(latest.risk.max_position, 0)} 仓位入场。</span></p>
+            <p><strong>退出规则</strong><span>{horizonDays} 日内先触发 {latest.risk.profit_atr_multiple.toFixed(0)} ATR 止盈、{latest.risk.stop_atr_multiple.toFixed(0)} ATR 止损、垂直屏障或熊市趋势退出。</span></p>
           </div>
         </section>
 
@@ -303,9 +304,9 @@ export default function Home() {
             <span>最大仓位 {pct(latest.risk.max_position, 0)}</span>
             <span>最大单笔风险 {pct(latest.risk.max_single_loss, 0)}</span>
             <span>最大杠杆 {latest.risk.max_leverage.toFixed(1)}x</span>
-            <span>ATR 倍数 {latest.risk.atr_multiple.toFixed(1)}</span>
-            <span>参考周期 {latest.risk.reference_holding_days_low}-{latest.risk.reference_holding_days_high} 天</span>
-            <span>Kelly 倍数 {latest.risk.kelly_fraction.toFixed(1)}x</span>
+            <span>止盈 {latest.risk.profit_atr_multiple.toFixed(0)} ATR</span>
+            <span>止损 {latest.risk.stop_atr_multiple.toFixed(0)} ATR</span>
+            <span>垂直屏障 {horizonDays} 天</span>
           </div>
         </section>
 
