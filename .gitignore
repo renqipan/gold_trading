@@ -7,8 +7,7 @@ dist/
 .env.*
 !.env.example
 
-# Local-only quantitative research code, data, models, and logs.
-research/
+# Local-only quantitative data, models, and logs.
 .venv-research/
 local_logs/
 data/raw/
@@ -18,4 +17,3 @@ data/models/
 # Python caches
 __pycache__/
 *.py[cod]
-

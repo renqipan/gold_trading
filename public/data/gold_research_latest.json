@@ -8,7 +8,7 @@
   "pUpHorizon": 0.4939020872116089,
   "pProfitFirst": 0.4939020872116089,
   "predictionHorizonDays": 60,
-  "predictionTarget": "hmm_quality + cusum_abs 候选交易在 60 个交易日内，是否先触发 10 ATR 止盈而不是 4 ATR 止损",
+  "predictionTarget": "hmm_quality + cusum_abs 候选交易在 60 个交易日训练标签窗口内，是否先触发 10 ATR 止盈而不是 4 ATR 止损",
   "marketStateCode": "s2",
   "marketState": "熊市",
   "guide": "卖出/空仓",
@@ -18,15 +18,13 @@
   "takeProfit": null,
   "atrPct": 0.02834232284463081,
   "thresholds": {
-    "buyAbove": 0.56,
+    "buyAbove": 0.6,
     "sellBelow": 0.36
   },
   "risk": {
     "prediction_horizon_days": 60,
-    "up_threshold": 0.56,
+    "up_threshold": 0.6,
     "down_threshold": 0.36,
-    "entry_floor": 0.42,
-    "trend_prior_probability": 0.6,
     "max_position": 1.0,
     "max_leverage": 1.0,
     "max_single_loss": 0.06,
@@ -34,8 +32,6 @@
     "max_drawdown_hard": 0.3,
     "atr_window": 14,
     "atr_multiple": 4.0,
-    "reference_holding_days_low": 10,
-    "reference_holding_days_high": 60,
     "kelly_fraction": 1.0,
     "retrain_every_days": 21,
     "label_purge_days": 60,
@@ -43,6 +39,7 @@
     "meta_event_kind": "cusum_abs",
     "cusum_threshold_mult": 0.8,
     "primary_signal_mode": "hmm_quality",
+    "hmm_exit_confirmation_days": 10,
     "profit_atr_multiple": 10.0,
     "stop_atr_multiple": 4.0
   },
@@ -66,22 +63,22 @@
     "test_accuracy_0_5": 0.3592233009708738
   },
   "backtestMetrics": {
-    "total_return": 1.425801720393491,
+    "total_return": 1.5557889079904692,
     "benchmark_return": 1.3087853531903284,
-    "annual_return": 0.3004638284822916,
-    "annual_vol": 0.16226479529978818,
-    "sharpe": 1.8516883340417576,
-    "max_drawdown": -0.10611231791658138,
-    "active_day_ratio": 0.7105882352941176,
-    "daily_win_rate_when_active": 0.5447019867549668,
-    "test_trades": 93,
-    "turnover": 84.0,
-    "net_total_return_2bps": 1.3853330662725734,
-    "net_sharpe_2bps": 1.8109926402524488,
-    "net_max_drawdown_2bps": -0.10823065860635706,
-    "net_total_return_5bps": 1.3258777129552053,
-    "net_sharpe_5bps": 1.7502636336067758,
-    "net_max_drawdown_5bps": -0.11145832015390034
+    "annual_return": 0.32074559484181786,
+    "annual_vol": 0.17340378374940957,
+    "sharpe": 1.8497035526360595,
+    "max_drawdown": -0.17346699770459528,
+    "active_day_ratio": 0.8270588235294117,
+    "daily_win_rate_when_active": 0.5512820512820513,
+    "test_trades": 25,
+    "turnover": 20.0,
+    "net_total_return_2bps": 1.5456049124092917,
+    "net_sharpe_2bps": 1.8407524283665402,
+    "net_max_drawdown_2bps": -0.173635283646414,
+    "net_total_return_5bps": 1.530401172716481,
+    "net_sharpe_5bps": 1.8273148572177254,
+    "net_max_drawdown_5bps": -0.1738877125591417
   },
   "topFeatures": [
     {
@@ -143,7 +140,7 @@
     "real_rate_proxy": "US10Y yield minus US CPI YoY"
   },
   "dataQuality": {
-    "generatedAt": "2026-06-13T00:24:13Z",
+    "generatedAt": "2026-06-13T00:58:42Z",
     "passed": true,
     "checks": {
       "gold": {
@@ -237,6 +234,8 @@
     "实际利率使用 US10Y 减美国 CPI 同比作为 proxy。",
     "ETF 资金流使用 GLD 成交额的量价方向 proxy。",
     "XGBoost 当前预测的是 triple-barrier meta-label：HMM quality + CUSUM 候选交易是否先触发止盈。",
+    "60 日窗口仅用于训练标签和防止标签泄漏，不作为真实持仓的强制退出时间。",
+    "HMM 退出需要熊市/恐慌且跌破 60 日均线连续确认 10 天。",
     "研究结果不构成投资建议。"
   ]
 }

@@ -1,0 +1,7 @@
+akshare>=1.16.0
+hmmlearn>=0.3.2
+numpy>=1.26
+pandas>=2.2
+requests>=2.31
+scikit-learn>=1.4
+xgboost>=2.0

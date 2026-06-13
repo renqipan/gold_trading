@@ -260,7 +260,7 @@ export default function Home() {
             </p>
             <div className="decisionMeta">
               <span>入场阈值 {pct(latest.thresholds.buyAbove, 0)}</span>
-              <span>{horizonDays} 日屏障</span>
+              <span>{horizonDays} 日标签窗口</span>
               <span>建议仓位 {pct(latest.position, 1)}</span>
             </div>
           </div>
@@ -289,7 +289,7 @@ export default function Home() {
           <div className="rules">
             <p><strong>趋势事件</strong><span>当 HMM quality 趋势成立时，用 CUSUM 波动阈值触发候选交易事件，最小间隔 {latest.risk.meta_event_gap_days} 个交易日。</span></p>
             <p><strong>Meta P &gt; {pct(latest.thresholds.buyAbove, 0)}</strong><span>XGBoost 判断候选交易质量足够高时，以最高 {pct(latest.risk.max_position, 0)} 仓位入场。</span></p>
-            <p><strong>退出规则</strong><span>{horizonDays} 日内先触发 {latest.risk.profit_atr_multiple.toFixed(0)} ATR 止盈、{latest.risk.stop_atr_multiple.toFixed(0)} ATR 止损、垂直屏障或熊市趋势退出。</span></p>
+            <p><strong>退出规则</strong><span>买入后不设置强制持仓到期；退出由 {latest.risk.profit_atr_multiple.toFixed(0)} ATR 止盈、{latest.risk.stop_atr_multiple.toFixed(0)} ATR 止损、HMM 熊市/恐慌跌破 60 日均线连续确认 {latest.risk.hmm_exit_confirmation_days} 天，或新 CUSUM 事件下 XGBoost 分数跌破 {pct(latest.thresholds.sellBelow, 0)} 决定。</span></p>
           </div>
         </section>
 
@@ -306,7 +306,8 @@ export default function Home() {
             <span>最大杠杆 {latest.risk.max_leverage.toFixed(1)}x</span>
             <span>止盈 {latest.risk.profit_atr_multiple.toFixed(0)} ATR</span>
             <span>止损 {latest.risk.stop_atr_multiple.toFixed(0)} ATR</span>
-            <span>垂直屏障 {horizonDays} 天</span>
+            <span>训练标签窗口 {horizonDays} 天</span>
+            <span>HMM 退出确认 {latest.risk.hmm_exit_confirmation_days} 天</span>
             <span>CUSUM {latest.risk.cusum_threshold_mult.toFixed(1)}x</span>
           </div>
         </section>
