@@ -72,6 +72,68 @@ function actionClass(action: string) {
   return "watch";
 }
 
+function Gauge({
+  label,
+  value,
+  threshold,
+  tone,
+}: {
+  label: string;
+  value: number;
+  threshold?: number;
+  tone: "buy" | "sell" | "watch";
+}) {
+  const score = Math.max(0, Math.min(100, value));
+  const cx = 86;
+  const cy = 88;
+  const radius = 56;
+  const angle = Math.PI - (score / 100) * Math.PI;
+  const pointerX = cx + Math.cos(angle) * radius;
+  const pointerY = cy - Math.sin(angle) * radius;
+  const thresholdPct = threshold == null ? null : Math.max(0, Math.min(100, threshold));
+  const thresholdAngle = thresholdPct == null ? null : Math.PI - (thresholdPct / 100) * Math.PI;
+  const thresholdX1 = thresholdAngle == null ? null : cx + Math.cos(thresholdAngle) * 48;
+  const thresholdY1 = thresholdAngle == null ? null : cy - Math.sin(thresholdAngle) * 48;
+  const thresholdX2 = thresholdAngle == null ? null : cx + Math.cos(thresholdAngle) * 68;
+  const thresholdY2 = thresholdAngle == null ? null : cy - Math.sin(thresholdAngle) * 68;
+  const gradientId = `gauge-${Array.from(label)
+    .map((char) => char.charCodeAt(0).toString(16))
+    .join("")}`;
+
+  return (
+    <div className={`gauge gauge-${tone}`}>
+      <p>{label}</p>
+      <svg viewBox="0 0 172 118" role="img" aria-label={`${label} 仪表盘`}>
+        <defs>
+          <linearGradient id={gradientId} x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stopColor="#FF4E5B" />
+            <stop offset="56%" stopColor="#F0C040" />
+            <stop offset="100%" stopColor="#3DDC84" />
+          </linearGradient>
+        </defs>
+        <path className="gaugeTrack" d="M22 88 A64 64 0 0 1 150 88" pathLength="100" />
+        <path
+          className="gaugeFill"
+          d="M22 88 A64 64 0 0 1 150 88"
+          pathLength="100"
+          style={{ stroke: `url(#${gradientId})`, strokeDasharray: `${score} 100` }}
+        />
+        {thresholdPct != null && thresholdX1 != null && thresholdY1 != null && thresholdX2 != null && thresholdY2 != null ? (
+          <>
+            <line className="gaugeThreshold" x1={thresholdX1} y1={thresholdY1} x2={thresholdX2} y2={thresholdY2} />
+            <text className="gaugeThresholdText" x={Math.min(thresholdX2 + 2, 124)} y={thresholdY2 - 4}>
+              &gt; {thresholdPct.toFixed(0)}%
+            </text>
+          </>
+        ) : null}
+        <line className="gaugePointer" x1={cx} y1={cy} x2={pointerX} y2={pointerY} />
+        <circle className="gaugePivot" cx={cx} cy={cy} r="3.5" />
+      </svg>
+      <strong>{score.toFixed(1)}%</strong>
+    </div>
+  );
+}
+
 function PriceChart() {
   const recent = prices.slice(-360);
   const priceDomainValues = recent.flatMap((point) => [
@@ -253,6 +315,9 @@ export default function Home() {
   const horizonDays = latest.predictionHorizonDays ?? 30;
   const modelProbability = latest.pProfitFirst ?? latest.pUpHorizon ?? latest.pUp30d;
   const rawAuc = latest.modelMetrics.raw_test_auc ?? latest.modelMetrics.test_auc;
+  const signalTone = actionClass(guide);
+  const modelScore = modelProbability * 100;
+  const featureMax = Math.max(0.000001, ...latest.topFeatures.map((item) => item.importance));
 
   return (
     <main>
@@ -266,9 +331,9 @@ export default function Home() {
         </nav>
 
         <div className="heroGrid">
-          <div className="decision">
+          <div className={`decision decision-${signalTone}`}>
             <p className="eyebrow">今日操作</p>
-            <h1 className={actionClass(guide)}>{guide}</h1>
+            <h1 className={signalTone}>{guide}</h1>
             <p className="decisionCopy">
               当前 HMM 状态为{latest.marketState}，
               XGBoost 估计该趋势候选交易先触发止盈的概率/评分为 {pct(modelProbability, 1)}。
@@ -277,6 +342,15 @@ export default function Home() {
               <span>入场阈值 {pct(latest.thresholds.buyAbove, 0)}</span>
               <span>{horizonDays} 日标签窗口</span>
               <span>建议仓位 {pct(latest.position, 1)}</span>
+            </div>
+            <div className="decisionGauges">
+              <Gauge label="建议仓位" value={latest.position * 100} tone={latest.position > 0 ? "buy" : signalTone} />
+              <Gauge
+                label="XGBoost 评分"
+                value={modelScore}
+                threshold={latest.thresholds.buyAbove * 100}
+                tone={modelProbability >= latest.thresholds.buyAbove ? "buy" : modelProbability <= latest.thresholds.sellBelow ? "sell" : "watch"}
+              />
             </div>
           </div>
 
@@ -339,8 +413,9 @@ export default function Home() {
               <div key={item.feature} className="featureRow">
                 <span>{item.feature}</span>
                 <div>
-                  <i style={{ width: `${Math.max(item.importance * 2600, 8)}px` }} />
+                  <i style={{ width: `${Math.max((item.importance / featureMax) * 100, 4)}%` }} />
                 </div>
+                <em>{item.importance.toFixed(4)}</em>
               </div>
             ))}
           </div>
