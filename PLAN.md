@@ -73,3 +73,5 @@
 - `public/data/gold_backtest.json`：网站样本外净值曲线。
 - `local_logs/gold_signals.csv`：本地信号日志，包含概率、状态、仓位、止损线和交易指南。
 - `local_logs/data_quality_report.json`：本地数据质量报告。
+
+网站展示数字应始终由上述 `public/data/*.json` 驱动。下次更新时运行 `npm run update:site`，不要在 `app/page.tsx` 中手动改价格、收益率、概率、仓位或阈值。

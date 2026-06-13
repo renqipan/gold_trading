@@ -43,6 +43,12 @@ source .venv-research/bin/activate
 python research/gold_research_pipeline.py --json
 ```
 
+也可以直接使用项目脚本：
+
+```bash
+npm run update:data
+```
+
 脚本会输出：
 
 - `public/data/gold_research_latest.json`
@@ -70,9 +76,7 @@ http://localhost:3000
 常规更新流程：
 
 ```bash
-source .venv-research/bin/activate
-python research/gold_research_pipeline.py --json
-npm run build
+npm run update:site
 git add research/gold_research_pipeline.py research/requirements.txt PLAN.md README.md app public/data .gitignore
 git commit -m "Update gold trading strategy data"
 git push origin main
@@ -80,7 +84,23 @@ git push origin main
 
 Vercel 会使用仓库里的 Next.js 项目构建网站。研究脚本本身不会在 Vercel 上自动运行；需要先在本地运行研究流水线，再提交更新后的 `public/data/*.json`。
 
+网站页面中的价格、概率、仓位、阈值、HMM 状态、回测收益、Sharpe、特征重要性等数字都从 `public/data/*.json` 读取，不在 `app/page.tsx` 手动维护。`npm run update:site` 会先运行研究算法刷新 JSON，再执行数据一致性检查和网站构建。
+
+如需测试外部行情源连通性：
+
+```bash
+npm run test:sources
+```
+
+测试结果会写入 `local_logs/data_source_probe.json`，用于判断 Eastmoney、Yahoo、Stooq、FRED 等源在当前网络下是否可用。
+
 ## 构建验证
+
+```bash
+npm run verify
+```
+
+单独构建网站：
 
 ```bash
 npm run build

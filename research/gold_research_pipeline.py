@@ -4,6 +4,7 @@ import argparse
 import json
 import math
 import os
+import random
 import subprocess
 import time
 import urllib.parse
@@ -34,6 +35,12 @@ RAW_DATA = ROOT / "data" / "raw"
 EASTMONEY_KLINE = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
 EASTMONEY_SEARCH = "https://searchapi.eastmoney.com/api/suggest/get"
 EASTMONEY_TOKEN = "D43BF722C8E33F0689C5A6D47D64A2D0"
+
+REQUEST_USER_AGENTS = [
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+]
 
 
 @dataclass(frozen=True)
@@ -73,39 +80,88 @@ def ensure_dirs() -> None:
         path.mkdir(parents=True, exist_ok=True)
 
 
-def request_json(url: str, params: dict[str, Any], timeout: int = 25) -> dict[str, Any]:
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X) AppleWebKit/537.36",
-        "Referer": "https://quote.eastmoney.com/",
+def browser_headers(referer: str = "https://quote.eastmoney.com/") -> dict[str, str]:
+    return {
+        "User-Agent": random.choice(REQUEST_USER_AGENTS),
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+        "Connection": "keep-alive",
+        "Referer": referer,
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-site",
     }
+
+
+def compact_error(text: str, max_length: int = 220) -> str:
+    line = " ".join(text.strip().split())
+    if len(line) <= max_length:
+        return line
+    return f"{line[:max_length].rstrip()}..."
+
+
+def random_request_pause(attempt: int) -> None:
+    if attempt == 0:
+        time.sleep(random.uniform(0.20, 0.70))
+        return
+    backoff = min(6.0, 0.75 * (2 ** (attempt - 1)))
+    time.sleep(backoff + random.uniform(0.25, 1.10))
+
+
+def curl_json(full_url: str, headers: dict[str, str], timeout: int) -> dict[str, Any]:
+    command = [
+        "curl",
+        "-q",
+        "-k",
+        "-L",
+        "--silent",
+        "--show-error",
+        "--fail",
+        "--compressed",
+        "--http1.1",
+        "--retry",
+        "2",
+        "--retry-delay",
+        "1",
+        "--max-time",
+        str(timeout),
+        "--noproxy",
+        "*",
+    ]
+    for name, value in headers.items():
+        command.extend(["-H", f"{name}: {value}"])
+    command.append(full_url)
+
+    result = subprocess.run(command, text=True, capture_output=True)
+    if result.returncode != 0:
+        stderr = compact_error(result.stderr)
+        raise RuntimeError(f"curl exit {result.returncode}: {stderr}")
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        preview = compact_error(result.stdout)
+        raise RuntimeError(f"curl returned invalid JSON: {preview}") from exc
+
+
+def request_json(url: str, params: dict[str, Any], timeout: int = 12, attempts: int = 4) -> dict[str, Any]:
     last_error: Exception | None = None
-    for attempt in range(3):
-        try:
-            response = requests.get(url, params=params, headers=headers, timeout=timeout, verify=False)
-            response.raise_for_status()
-            return response.json()
-        except Exception as exc:
-            last_error = exc
-            time.sleep(0.8 + attempt * 0.8)
+    with requests.Session() as session:
+        session.trust_env = False
+        for attempt in range(attempts):
+            random_request_pause(attempt)
+            headers = browser_headers()
+            try:
+                response = session.get(url, params=params, headers=headers, timeout=(4, timeout), verify=False)
+                response.raise_for_status()
+                return response.json()
+            except Exception as exc:
+                last_error = exc
 
     full_url = f"{url}?{urllib.parse.urlencode(params)}"
     try:
-        raw = subprocess.check_output(
-            [
-                "curl",
-                "-k",
-                "-L",
-                "--silent",
-                "--show-error",
-                "--max-time",
-                str(timeout),
-                "-A",
-                headers["User-Agent"],
-                full_url,
-            ],
-            text=True,
-        )
-        return json.loads(raw)
+        return curl_json(full_url, browser_headers(), timeout)
     except Exception as exc:
         raise RuntimeError(f"request failed after retries: {last_error}; curl fallback: {exc}") from exc
 
