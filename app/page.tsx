@@ -203,7 +203,6 @@ function StateTape() {
         </div>
       </div>
       <div className="stateTapeFrame">
-        <span>{start.date}</span>
         <div className="stateTape" aria-label="HMM 市场状态时间轴">
           {recent.map((point) => (
             <span
@@ -213,7 +212,10 @@ function StateTape() {
             />
           ))}
         </div>
-        <span>{end.date}</span>
+        <div className="stateTapeAxis" aria-label="状态带时间范围">
+          <span>{start.date}</span>
+          <span>{end.date}</span>
+        </div>
       </div>
       <div className="stateLegend">
         <span><i className="stateBull" />牛市</span>

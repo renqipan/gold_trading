@@ -140,7 +140,7 @@
     "real_rate_proxy": "US10Y yield minus US CPI YoY"
   },
   "dataQuality": {
-    "generatedAt": "2026-06-13T00:58:42Z",
+    "generatedAt": "2026-06-13T01:21:54Z",
     "passed": true,
     "checks": {
       "gold": {

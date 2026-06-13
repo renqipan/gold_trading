@@ -377,12 +377,14 @@ h2 {
 
 .stateTapeFrame {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 10px;
+  gap: 7px;
 }
 
-.stateTapeFrame > span {
+.stateTapeAxis {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 2px;
   color: var(--muted);
   font-size: 12px;
   font-weight: 700;
@@ -572,11 +574,6 @@ h2 {
   }
 
   .stateTapeFrame {
-    grid-template-columns: 1fr;
     gap: 6px;
-  }
-
-  .stateTapeFrame > span:last-child {
-    justify-self: end;
   }
 }
