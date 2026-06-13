@@ -249,6 +249,20 @@ h2 {
   white-space: nowrap;
 }
 
+.backtestSummary {
+  display: grid;
+  justify-items: end;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.backtestSummary strong {
+  color: var(--ink);
+  font-size: 14px;
+}
+
 .priceChart,
 .equityChart {
   display: block;
@@ -359,6 +373,20 @@ h2 {
 
 .legendBench {
   background: var(--gold);
+}
+
+.stateTapeFrame {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.stateTapeFrame > span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 .stateTape {
@@ -533,8 +561,22 @@ h2 {
     flex-direction: column;
   }
 
+  .backtestSummary {
+    justify-items: start;
+    white-space: normal;
+  }
+
   .chartScale {
     align-items: flex-start;
     flex-direction: row;
+  }
+
+  .stateTapeFrame {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+
+  .stateTapeFrame > span:last-child {
+    justify-self: end;
   }
 }

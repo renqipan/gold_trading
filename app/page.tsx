@@ -146,6 +146,8 @@ function PriceChart() {
 
 function EquityChart() {
   const recent = backtest;
+  const start = recent[0];
+  const end = recent[recent.length - 1];
   const domainValues = recent.flatMap((point) => [point.equity, point.benchmark_equity]);
   const domain: [number, number] = [Math.min(...domainValues), Math.max(...domainValues)];
   const strategyPath = linePath(
@@ -170,6 +172,11 @@ function EquityChart() {
           <p className="eyebrow">样本外回测</p>
           <h2>策略净值 vs 买入持有</h2>
         </div>
+        <div className="backtestSummary" aria-label="样本外回测摘要">
+          <span>{start.date} 至 {end.date}</span>
+          <strong>策略 {pct(latest.backtestMetrics.total_return, 1)}</strong>
+          <strong>买入持有 {pct(latest.backtestMetrics.benchmark_return, 1)}</strong>
+        </div>
       </div>
       <svg className="equityChart" viewBox="0 0 720 260" role="img" aria-label="回测净值曲线">
         <path d={benchmarkPath} className="benchmarkLine" />
@@ -185,6 +192,8 @@ function EquityChart() {
 
 function StateTape() {
   const recent = prices.slice(-120);
+  const start = recent[0];
+  const end = recent[recent.length - 1];
   return (
     <section className="panel">
       <div className="sectionHead">
@@ -193,14 +202,18 @@ function StateTape() {
           <h2>近 120 日状态带</h2>
         </div>
       </div>
-      <div className="stateTape" aria-label="HMM 市场状态时间轴">
-        {recent.map((point) => (
-          <span
-            key={point.date}
-            className={`stateBlock ${stateClass(point.stateCode)}`}
-            title={`${point.date} ${point.state}`}
-          />
-        ))}
+      <div className="stateTapeFrame">
+        <span>{start.date}</span>
+        <div className="stateTape" aria-label="HMM 市场状态时间轴">
+          {recent.map((point) => (
+            <span
+              key={point.date}
+              className={`stateBlock ${stateClass(point.stateCode)}`}
+              title={`${point.date} ${point.state}`}
+            />
+          ))}
+        </div>
+        <span>{end.date}</span>
       </div>
       <div className="stateLegend">
         <span><i className="stateBull" />牛市</span>
