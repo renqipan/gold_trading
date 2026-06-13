@@ -421,6 +421,16 @@ h2 {
   font-size: 13px;
 }
 
+.backtestSummary strong.backtestStrategy,
+.backtestSummary strong[data-series="strategy"] {
+  color: var(--gold) !important;
+}
+
+.backtestSummary strong.backtestBenchmark,
+.backtestSummary strong[data-series="benchmark"] {
+  color: var(--benchmark) !important;
+}
+
 .priceChart,
 .equityChart {
   display: block;

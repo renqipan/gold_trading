@@ -236,8 +236,12 @@ function EquityChart() {
         </div>
         <div className="backtestSummary" aria-label="样本外回测摘要">
           <span>{start.date} 至 {end.date}</span>
-          <strong>策略 {pct(latest.backtestMetrics.total_return, 1)}</strong>
-          <strong>买入持有 {pct(latest.backtestMetrics.benchmark_return, 1)}</strong>
+          <strong className="backtestStrategy" data-series="strategy">
+            策略 {pct(latest.backtestMetrics.total_return, 1)}
+          </strong>
+          <strong className="backtestBenchmark" data-series="benchmark">
+            买入持有 {pct(latest.backtestMetrics.benchmark_return, 1)}
+          </strong>
         </div>
       </div>
       <svg className="equityChart" viewBox="0 0 720 260" role="img" aria-label="回测净值曲线">
