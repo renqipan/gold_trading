@@ -216,6 +216,7 @@ h1.watch {
 }
 
 .panel {
+  min-width: 0;
   padding: 22px;
   overflow: hidden;
 }
@@ -378,6 +379,7 @@ h2 {
 .stateTapeFrame {
   display: grid;
   gap: 7px;
+  min-width: 0;
 }
 
 .stateTapeAxis {
@@ -393,9 +395,11 @@ h2 {
 
 .stateTape {
   display: grid;
-  grid-template-columns: repeat(120, minmax(2px, 1fr));
+  grid-template-columns: repeat(120, minmax(0, 1fr));
   gap: 2px;
   height: 74px;
+  min-width: 0;
+  width: 100%;
   padding: 8px;
   border: 1px solid var(--line);
   background: #fbfcf8;
@@ -403,7 +407,7 @@ h2 {
 }
 
 .stateBlock {
-  min-width: 2px;
+  min-width: 0;
   border-radius: 3px;
 }
 
@@ -575,5 +579,11 @@ h2 {
 
   .stateTapeFrame {
     gap: 6px;
+  }
+
+  .stateTape {
+    gap: 1px;
+    height: 58px;
+    padding: 6px;
   }
 }
