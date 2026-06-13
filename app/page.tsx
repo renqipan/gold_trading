@@ -268,7 +268,7 @@ export default function Home() {
           <div className="snapshot">
             <MetricCard label="黄金价格" value={num(latest.price, 2)} detail={`${latest.asset} · 日变化 ${pct(oneDay, 2)}`} />
             <MetricCard label="ATR 止损线" value={latest.atrStop ? num(latest.atrStop, 2) : "无"} detail={`止盈 ${latest.risk.profit_atr_multiple.toFixed(0)} ATR · 止损 ${latest.risk.stop_atr_multiple.toFixed(0)} ATR`} />
-            <MetricCard label="样本外 Sharpe" value={num(latest.backtestMetrics.sharpe, 2)} detail={`最大回撤 ${pct(latest.backtestMetrics.max_drawdown, 1)}`} />
+            <MetricCard label="样本外 Sharpe" value={num(latest.backtestMetrics.sharpe, 2)} detail={`5bps 净收益 ${pct(latest.backtestMetrics.net_total_return_5bps, 1)}`} />
             <MetricCard label="Raw AUC" value={num(rawAuc, 2)} detail={`测试期交易动作 ${latest.backtestMetrics.test_trades}`} />
           </div>
         </div>
@@ -287,7 +287,7 @@ export default function Home() {
             </div>
           </div>
           <div className="rules">
-            <p><strong>趋势事件</strong><span>当慢趋势成立时，每 {latest.risk.meta_event_gap_days} 个交易日生成一次候选交易事件。</span></p>
+            <p><strong>趋势事件</strong><span>当 HMM quality 趋势成立时，用 CUSUM 波动阈值触发候选交易事件，最小间隔 {latest.risk.meta_event_gap_days} 个交易日。</span></p>
             <p><strong>Meta P &gt; {pct(latest.thresholds.buyAbove, 0)}</strong><span>XGBoost 判断候选交易质量足够高时，以最高 {pct(latest.risk.max_position, 0)} 仓位入场。</span></p>
             <p><strong>退出规则</strong><span>{horizonDays} 日内先触发 {latest.risk.profit_atr_multiple.toFixed(0)} ATR 止盈、{latest.risk.stop_atr_multiple.toFixed(0)} ATR 止损、垂直屏障或熊市趋势退出。</span></p>
           </div>
@@ -307,6 +307,7 @@ export default function Home() {
             <span>止盈 {latest.risk.profit_atr_multiple.toFixed(0)} ATR</span>
             <span>止损 {latest.risk.stop_atr_multiple.toFixed(0)} ATR</span>
             <span>垂直屏障 {horizonDays} 天</span>
+            <span>CUSUM {latest.risk.cusum_threshold_mult.toFixed(1)}x</span>
           </div>
         </section>
 
