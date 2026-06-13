@@ -17,3 +17,6 @@ data/models/
 # Python caches
 __pycache__/
 *.py[cod]
+
+# TypeScript build cache
+*.tsbuildinfo
