@@ -265,7 +265,7 @@ function AblationPanel() {
       <div className="sectionHead">
         <div>
           <p className="eyebrow">策略归因</p>
-          <h2>A-E 消融实验</h2>
+          <h2>扩展消融实验</h2>
         </div>
         <div className="chartScale">
           <span>用于判断收益来自趋势、HMM、XGBoost 还是 ATR</span>
@@ -361,6 +361,10 @@ export default function Home() {
   const signalTone = actionClass(guide);
   const modelScore = modelProbability * 100;
   const featureMax = Math.max(0.000001, ...latest.topFeatures.map((item) => item.importance));
+  const modelContext = latest.isMetaEvent ? "当前候选交易" : "最近候选交易延续";
+  const modelGateText = latest.xgboostEnabled
+    ? "XGBoost 已通过验证闸门，可参与入场/退出判断。"
+    : "XGBoost 未通过验证闸门，今日操作由 HMM/CUSUM/ATR 风控决定。";
 
   return (
     <main>
@@ -379,7 +383,8 @@ export default function Home() {
             <h1 className={signalTone}>{guide}</h1>
             <p className="decisionCopy">
               当前 HMM 状态为{latest.marketState}，
-              XGBoost 估计该趋势候选交易先触发止盈的概率/评分为 {pct(modelProbability, 1)}。
+              {modelContext}的 XGBoost 止盈优先评分为 {pct(modelProbability, 1)}。
+              {modelGateText}
             </p>
             <div className="decisionMeta">
               <span>入场阈值 {pct(latest.thresholds.buyAbove, 0)}</span>

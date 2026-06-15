@@ -4,13 +4,16 @@
   "assetDetail": "东方财富国际期货 secid=101.QO00Y，作为黄金价格主序列",
   "price": 4224.5,
   "dailyChange": -0.0020669698222406385,
-  "pUp30d": 0.6002197265625,
-  "pUpHorizon": 0.6002197265625,
-  "pProfitFirst": 0.6002197265625,
+  "pUp30d": 0.7818203568458557,
+  "pUpHorizon": 0.7818203568458557,
+  "pProfitFirst": 0.7818203568458557,
+  "isMetaEvent": false,
+  "isAcceptedEvent": false,
+  "xgboostEnabled": false,
   "predictionHorizonDays": 60,
-  "predictionTarget": "hmm_quality + cusum_abs 候选交易在 60 个交易日训练标签窗口内，是否先触发 10 ATR 止盈而不是 4 ATR 止损",
-  "marketStateCode": "s4",
-  "marketState": "恐慌",
+  "predictionTarget": "hmm_quality + cusum_abs 候选交易在 60 个交易日训练标签窗口内，是否先触发 10 ATR 止盈而不是 5 ATR 止损",
+  "marketStateCode": "s2",
+  "marketState": "熊市",
   "guide": "卖出/空仓",
   "rawSignal": "flat",
   "position": 0.0,
@@ -39,50 +42,78 @@
     "meta_event_kind": "cusum_abs",
     "cusum_threshold_mult": 0.8,
     "primary_signal_mode": "hmm_quality",
-    "hmm_exit_confirmation_days": 10,
+    "hmm_exit_confirmation_days": 12,
     "profit_atr_multiple": 10.0,
-    "stop_atr_multiple": 4.0,
-    "xgboost_min_validation_auc": 0.52
+    "stop_atr_multiple": 5.0,
+    "xgboost_min_validation_auc": 0.52,
+    "xgboost_min_validation_buy_signals": 3,
+    "xgboost_min_validation_precision": 0.4,
+    "xgboost_min_validation_recall": 0.05,
+    "realistic_cost_bps": 8.0,
+    "live_soft_drawdown_position": 0.5,
+    "live_hard_drawdown_position": 0.0
   },
   "modelMetrics": {
     "target": "triple_barrier_profit_first",
-    "raw_validation_auc": 0.34,
-    "raw_test_auc": 0.709068271425607,
+    "raw_validation_auc": 0.3669154228855721,
+    "raw_test_auc": 0.7245846876128567,
     "probability_orientation": "raw_no_inverse",
     "xgboost_enabled": false,
     "xgboost_min_validation_auc": 0.52,
-    "xgboost_gate_reason": "validation_auc_below_threshold_or_insufficient_validation_events",
-    "walk_forward_folds": 28,
-    "meta_events": 539,
-    "meta_positive_rate": 0.22820037105751392,
+    "validation_buy_signals": 0,
+    "validation_buy_precision": 0.0,
+    "validation_buy_recall": 0.0,
+    "xgboost_min_validation_buy_signals": 3,
+    "xgboost_min_validation_precision": 0.4,
+    "xgboost_min_validation_recall": 0.05,
+    "xgboost_gate_reason": "validation_trade_quality_below_threshold",
+    "walk_forward_folds": 29,
+    "meta_events": 608,
+    "meta_positive_rate": 0.21217105263157895,
     "event_gap_days": 3,
     "event_kind": "cusum_abs",
     "cusum_threshold_mult": 0.8,
     "primary_signal_mode": "hmm_quality",
     "profit_atr_multiple": 10.0,
-    "stop_atr_multiple": 4.0,
+    "stop_atr_multiple": 5.0,
     "vertical_barrier_days": 60,
-    "test_auc": 0.709068271425607,
-    "test_brier": 0.26402248201393214,
-    "test_accuracy_0_5": 0.6318407960199005
+    "test_auc": 0.7245846876128567,
+    "test_brier": 0.24052052917834413,
+    "test_accuracy_0_5": 0.6454545454545455
   },
   "backtestMetrics": {
-    "total_return": 1.3882485751204467,
+    "execution_model": "close_to_close_with_prior_day_position",
+    "total_return": 1.8650546905030905,
     "benchmark_return": 1.3087853531903284,
-    "annual_return": 0.29446245894147327,
-    "annual_vol": 0.17771948647386118,
-    "sharpe": 1.6568946083736436,
-    "max_drawdown": -0.2116559161964452,
-    "active_day_ratio": 0.8964705882352941,
-    "daily_win_rate_when_active": 0.5421052631578948,
+    "annual_return": 0.36623832783429977,
+    "annual_vol": 0.18152748363691115,
+    "sharpe": 2.017536521174087,
+    "max_drawdown": -0.18124326603269747,
+    "active_day_ratio": 0.8905882352941177,
+    "daily_win_rate_when_active": 0.5476190476190477,
+    "test_trades": 22,
+    "turnover": 18.0,
+    "net_total_return_2bps": 1.8547503513769161,
+    "net_sharpe_2bps": 2.009364134586237,
+    "net_max_drawdown_2bps": -0.18124326603269791,
+    "net_total_return_5bps": 1.839359448019648,
+    "net_sharpe_5bps": 1.9970969693609135,
+    "net_max_drawdown_5bps": -0.18124326603269802
+  },
+  "liveExecutionMetrics": {
+    "execution_model": "t_close_signal_t_plus_1_open_execution",
+    "cost_bps": 8.0,
+    "total_return": 1.8075466510567226,
+    "benchmark_return": 1.3087853531903284,
+    "annual_return": 0.358050012547636,
+    "annual_vol": 0.1801929118240187,
+    "sharpe": 1.9870371643548188,
+    "max_drawdown": -0.18107368790900513,
+    "active_day_ratio": 0.8905882352941177,
+    "daily_win_rate_when_active": 0.5430809399477807,
     "test_trades": 20,
-    "turnover": 14.0,
-    "net_total_return_2bps": 1.3815731435427474,
-    "net_sharpe_2bps": 1.6508252078712522,
-    "net_max_drawdown_2bps": -0.2119740634125028,
-    "net_total_return_5bps": 1.371592475392235,
-    "net_sharpe_5bps": 1.6417126906364619,
-    "net_max_drawdown_5bps": -0.2124511638537141
+    "turnover": 19.0,
+    "drawdown_scaled_days": 1
   },
   "ablation": [
     {
@@ -101,113 +132,301 @@
       "net_max_drawdown_5bps": -0.24275345568859508
     },
     {
-      "name": "B_hmm_trend_filter",
-      "label": "纯 HMM/趋势过滤",
-      "total_return": 0.9693607552391199,
+      "name": "B_technical_trend_filter",
+      "label": "纯技术趋势过滤",
+      "total_return": 1.2901846685506269,
       "benchmark_return": 1.3087853531903284,
-      "sharpe": 1.271391038771335,
-      "max_drawdown": -0.1357865488737987,
-      "active_day_ratio": 0.7823529411764706,
-      "daily_win_rate_when_active": 0.5436746987951807,
-      "test_trades": 45,
-      "turnover": 46.0,
-      "net_total_return_5bps": 0.9242922524900499,
-      "net_sharpe_5bps": 1.2216407462618863,
-      "net_max_drawdown_5bps": -0.14357019919567082
+      "sharpe": 1.4893988497789188,
+      "max_drawdown": -0.1919929730479405,
+      "active_day_ratio": 0.8847058823529412,
+      "daily_win_rate_when_active": 0.5432756324900133,
+      "test_trades": 13,
+      "turnover": 14.0,
+      "net_total_return_5bps": 1.274171898073977,
+      "net_sharpe_5bps": 1.4749018337124873,
+      "net_max_drawdown_5bps": -0.19199297304793983
     },
     {
-      "name": "C_hmm_cusum",
-      "label": "HMM + CUSUM，无 XGBoost，无 ATR",
-      "total_return": 1.260206594656705,
+      "name": "C_hmm_quality_filter",
+      "label": "HMM quality 趋势过滤",
+      "total_return": 1.2901846685506269,
       "benchmark_return": 1.3087853531903284,
-      "sharpe": 1.450613544433317,
-      "max_drawdown": -0.19199297304793983,
-      "active_day_ratio": 0.92,
-      "daily_win_rate_when_active": 0.5397435897435897,
-      "test_trades": 9,
+      "sharpe": 1.4893988497789188,
+      "max_drawdown": -0.1919929730479405,
+      "active_day_ratio": 0.8847058823529412,
+      "daily_win_rate_when_active": 0.5432756324900133,
+      "test_trades": 13,
+      "turnover": 14.0,
+      "net_total_return_5bps": 1.274171898073977,
+      "net_sharpe_5bps": 1.4749018337124873,
+      "net_max_drawdown_5bps": -0.19199297304793983
+    },
+    {
+      "name": "D_trend_cusum",
+      "label": "技术趋势 + CUSUM，无 HMM/ATR/XGBoost",
+      "total_return": 1.5160444633063803,
+      "benchmark_return": 1.3087853531903284,
+      "sharpe": 1.656922642000812,
+      "max_drawdown": -0.19199297304793994,
+      "active_day_ratio": 0.9,
+      "daily_win_rate_when_active": 0.5445026178010471,
+      "test_trades": 7,
       "turnover": 8.0,
-      "net_total_return_5bps": 1.2512296676062382,
-      "net_sharpe_5bps": 1.442852515378272,
-      "net_max_drawdown_5bps": -0.1919929730479405
+      "net_total_return_5bps": 1.5059809068166072,
+      "net_sharpe_5bps": 1.6485336539835518,
+      "net_max_drawdown_5bps": -0.1919929730479406
     },
     {
-      "name": "D_hmm_cusum_xgboost",
+      "name": "E_hmm_cusum",
+      "label": "HMM + CUSUM，无 XGBoost，无 ATR",
+      "total_return": 1.5160444633063803,
+      "benchmark_return": 1.3087853531903284,
+      "sharpe": 1.656922642000812,
+      "max_drawdown": -0.19199297304793994,
+      "active_day_ratio": 0.9,
+      "daily_win_rate_when_active": 0.5445026178010471,
+      "test_trades": 7,
+      "turnover": 8.0,
+      "net_total_return_5bps": 1.5059809068166072,
+      "net_sharpe_5bps": 1.6485336539835518,
+      "net_max_drawdown_5bps": -0.1919929730479406
+    },
+    {
+      "name": "F_hmm_cusum_atr",
+      "label": "HMM + CUSUM + ATR，无 XGBoost",
+      "total_return": 1.8650546905030905,
+      "benchmark_return": 1.3087853531903284,
+      "sharpe": 2.017536521174087,
+      "max_drawdown": -0.18124326603269747,
+      "active_day_ratio": 0.8905882352941177,
+      "daily_win_rate_when_active": 0.5476190476190477,
+      "test_trades": 22,
+      "turnover": 18.0,
+      "net_total_return_5bps": 1.839359448019648,
+      "net_sharpe_5bps": 1.9970969693609135,
+      "net_max_drawdown_5bps": -0.18124326603269802
+    },
+    {
+      "name": "G_hmm_cusum_xgboost",
       "label": "HMM + CUSUM + XGBoost，无 ATR",
-      "total_return": -0.017723979734783568,
+      "total_return": -0.06516003783164959,
       "benchmark_return": 1.3087853531903284,
-      "sharpe": -0.24337073410365465,
-      "max_drawdown": -0.0546479763912312,
-      "active_day_ratio": 0.015294117647058824,
-      "daily_win_rate_when_active": 0.46153846153846156,
-      "test_trades": 4,
-      "turnover": 4.0,
-      "net_total_return_5bps": -0.01967319416062019,
-      "net_sharpe_5bps": -0.27271466251706,
-      "net_max_drawdown_5bps": -0.05464797639123109
+      "sharpe": -0.33539104085689997,
+      "max_drawdown": -0.12997162626312908,
+      "active_day_ratio": 0.04470588235294118,
+      "daily_win_rate_when_active": 0.42105263157894735,
+      "test_trades": 2,
+      "turnover": 2.0,
+      "net_total_return_5bps": -0.06609534063417788,
+      "net_sharpe_5bps": -0.3402965131048859,
+      "net_max_drawdown_5bps": -0.1304066404499974
     },
     {
-      "name": "E_hmm_cusum_xgboost_atr",
+      "name": "H_hmm_cusum_xgboost_atr",
       "label": "HMM + CUSUM + XGBoost + ATR",
-      "total_return": -0.017723979734783568,
+      "total_return": -0.13944194227065354,
       "benchmark_return": 1.3087853531903284,
-      "sharpe": -0.24337073410365465,
-      "max_drawdown": -0.0546479763912312,
-      "active_day_ratio": 0.015294117647058824,
-      "daily_win_rate_when_active": 0.46153846153846156,
+      "sharpe": -0.9214790113140114,
+      "max_drawdown": -0.1690894962296997,
+      "active_day_ratio": 0.03058823529411765,
+      "daily_win_rate_when_active": 0.2692307692307692,
       "test_trades": 4,
       "turnover": 4.0,
-      "net_total_return_5bps": -0.01967319416062019,
-      "net_sharpe_5bps": -0.27271466251706,
-      "net_max_drawdown_5bps": -0.05464797639123109
+      "net_total_return_5bps": -0.1411701518809021,
+      "net_sharpe_5bps": -0.9323305621959592,
+      "net_max_drawdown_5bps": -0.17034271922193622
+    },
+    {
+      "name": "I_formal_gated_strategy",
+      "label": "正式闸门策略",
+      "total_return": 1.8650546905030905,
+      "benchmark_return": 1.3087853531903284,
+      "sharpe": 2.017536521174087,
+      "max_drawdown": -0.18124326603269747,
+      "active_day_ratio": 0.8905882352941177,
+      "daily_win_rate_when_active": 0.5476190476190477,
+      "test_trades": 22,
+      "turnover": 18.0,
+      "net_total_return_5bps": 1.839359448019648,
+      "net_sharpe_5bps": 1.9970969693609135,
+      "net_max_drawdown_5bps": -0.18124326603269802
+    }
+  ],
+  "modelValidation": [
+    {
+      "segment_type": "sample",
+      "segment": "validation",
+      "n": 79,
+      "positive_rate": 0.1518987341772152,
+      "mean_probability": 0.16520557142322576,
+      "auc": 0.3669154228855721,
+      "brier": 0.14953845943892533,
+      "accuracy_0_5": 0.8481012658227848,
+      "precision_0_5": 0.0,
+      "recall_0_5": 0.0,
+      "precision_buy_threshold": 0.0,
+      "recall_buy_threshold": 0.0
+    },
+    {
+      "segment_type": "sample",
+      "segment": "test",
+      "n": 220,
+      "positive_rate": 0.35454545454545455,
+      "mean_probability": 0.15095078003677456,
+      "auc": 0.7245846876128567,
+      "brier": 0.24052052917834413,
+      "accuracy_0_5": 0.6454545454545455,
+      "precision_0_5": 0.5,
+      "recall_0_5": 0.05128205128205128,
+      "precision_buy_threshold": 0.0,
+      "recall_buy_threshold": 0.0
+    },
+    {
+      "segment_type": "test_year",
+      "segment": "2023",
+      "n": 48,
+      "positive_rate": 0.0625,
+      "mean_probability": 0.12526618448706964,
+      "auc": 0.7333333333333333,
+      "brier": 0.06735475879529741,
+      "accuracy_0_5": 0.9375,
+      "precision_0_5": 0.0,
+      "recall_0_5": 0.0,
+      "precision_buy_threshold": 0.0,
+      "recall_buy_threshold": 0.0
+    },
+    {
+      "segment_type": "test_year",
+      "segment": "2024",
+      "n": 78,
+      "positive_rate": 0.2692307692307692,
+      "mean_probability": 0.09184661703423047,
+      "auc": 0.741436925647452,
+      "brier": 0.21092907526328616,
+      "accuracy_0_5": 0.7307692307692307,
+      "precision_0_5": 0.0,
+      "recall_0_5": 0.0,
+      "precision_buy_threshold": 0.0,
+      "recall_buy_threshold": 0.0
+    },
+    {
+      "segment_type": "test_year",
+      "segment": "2025",
+      "n": 77,
+      "positive_rate": 0.6493506493506493,
+      "mean_probability": 0.18641442399133334,
+      "auc": 0.7903703703703704,
+      "brier": 0.3868926669144602,
+      "accuracy_0_5": 0.4025974025974026,
+      "precision_0_5": 1.0,
+      "recall_0_5": 0.08,
+      "precision_buy_threshold": 0.0,
+      "recall_buy_threshold": 0.0
+    },
+    {
+      "segment_type": "test_year",
+      "segment": "2026",
+      "n": 17,
+      "positive_rate": 0.23529411764705882,
+      "mean_probability": 0.33402635157108307,
+      "auc": 0.6153846153846154,
+      "brier": 0.20225204553598064,
+      "accuracy_0_5": 0.5294117647058824,
+      "precision_0_5": 0.0,
+      "recall_0_5": 0.0,
+      "precision_buy_threshold": 0.0,
+      "recall_buy_threshold": 0.0
+    },
+    {
+      "segment_type": "test_hmm_state",
+      "segment": "熊市",
+      "n": 20,
+      "positive_rate": 0.5,
+      "mean_probability": 0.25815468169748784,
+      "auc": 0.5800000000000001,
+      "brier": 0.30797131426901675,
+      "accuracy_0_5": 0.55,
+      "precision_0_5": 1.0,
+      "recall_0_5": 0.1,
+      "precision_buy_threshold": 0.0,
+      "recall_buy_threshold": 0.0
+    },
+    {
+      "segment_type": "test_hmm_state",
+      "segment": "牛市",
+      "n": 155,
+      "positive_rate": 0.25161290322580643,
+      "mean_probability": 0.12306286406613165,
+      "auc": 0.6569407603890361,
+      "brier": 0.19132416576478864,
+      "accuracy_0_5": 0.7225806451612903,
+      "precision_0_5": 0.0,
+      "recall_0_5": 0.0,
+      "precision_buy_threshold": 0.0,
+      "recall_buy_threshold": 0.0
+    },
+    {
+      "segment_type": "test_hmm_state",
+      "segment": "震荡",
+      "n": 45,
+      "positive_rate": 0.6444444444444445,
+      "mean_probability": 0.1993629787531164,
+      "auc": 0.8168103448275863,
+      "brier": 0.3799965431180695,
+      "accuracy_0_5": 0.4222222222222222,
+      "precision_0_5": 1.0,
+      "recall_0_5": 0.10344827586206896,
+      "precision_buy_threshold": 0.0,
+      "recall_buy_threshold": 0.0
     }
   ],
   "topFeatures": [
     {
-      "feature": "vol_ratio_20_60",
-      "importance": 0.05210002139210701
+      "feature": "cftc_mm_gold_net_pct_oi",
+      "importance": 0.05029204115271568
     },
     {
-      "feature": "vol_20",
-      "importance": 0.05078207328915596
+      "feature": "cpi_mom_surprise_z252",
+      "importance": 0.04607021436095238
     },
     {
-      "feature": "ret_60",
-      "importance": 0.05059767886996269
+      "feature": "gpr_acts",
+      "importance": 0.04464312642812729
     },
     {
-      "feature": "gld_flow_proxy_20",
-      "importance": 0.04663876071572304
-    },
-    {
-      "feature": "adx_14",
-      "importance": 0.04485243186354637
-    },
-    {
-      "feature": "vol_30",
-      "importance": 0.04010855033993721
-    },
-    {
-      "feature": "vol_10",
-      "importance": 0.039462774991989136
-    },
-    {
-      "feature": "spx_ret_5",
-      "importance": 0.037587374448776245
+      "feature": "core_cpi_mom_surprise_z252",
+      "importance": 0.04094739258289337
     },
     {
       "feature": "mom_60",
-      "importance": 0.03452983871102333
+      "importance": 0.04032417759299278
     },
     {
-      "feature": "cot_gold_net_z52w",
-      "importance": 0.033460583537817
+      "feature": "nfp_surprise",
+      "importance": 0.03743680566549301
+    },
+    {
+      "feature": "gpr_threats",
+      "importance": 0.036051150411367416
+    },
+    {
+      "feature": "nfp_surprise_z252",
+      "importance": 0.03584820777177811
+    },
+    {
+      "feature": "vol_ratio_20_60",
+      "importance": 0.034817393869161606
+    },
+    {
+      "feature": "adx_14",
+      "importance": 0.033146023750305176
     }
   ],
   "stateMapping": {
-    "1": "牛市",
-    "3": "熊市",
+    "2": "牛市",
+    "1": "熊市",
     "0": "震荡",
-    "2": "恐慌"
+    "3": "恐慌"
   },
   "sources": {
     "gold": "Eastmoney 101.QO00Y: COMEX mini gold continuous proxy (cached fallback after refresh failure); OHLC repaired rows=8",
@@ -216,12 +435,25 @@
     "gld": "Eastmoney 107.GLD: SPDR Gold Shares ETF (cached fallback after refresh failure)",
     "vixy": "Eastmoney 107.VIXY: VIX futures ETF proxy (cached fallback after refresh failure)",
     "spx": "Eastmoney 100.SPX: S&P 500 index (cached fallback after refresh failure)",
-    "cpi": "AkShare Jin10 US CPI YoY",
-    "cot": "AkShare Jin10 CFTC gold positioning",
-    "real_rate_proxy": "US10Y yield minus US CPI YoY"
+    "cpi": "AkShare Jin10 US CPI YoY; shifted to next month +14 days as point-in-time approximation",
+    "cot": "AkShare Jin10 CFTC gold positioning; shifted +3 calendar days to approximate Friday release",
+    "cftc_managed_money": "CFTC official disaggregated futures-only COT; gold managed money; shifted +3 calendar days",
+    "cpi_mom": "AkShare US CPI MoM actual minus forecast; release-date aligned",
+    "core_cpi_mom": "AkShare US core CPI MoM actual minus forecast; release-date aligned",
+    "nfp": "AkShare US nonfarm payroll actual minus forecast; release-date aligned",
+    "tips_real_yield": "unavailable: text request failed after retries: HTTPSConnectionPool(host='fred.stlouisfed.org', port=443): Read timed out. (read timeout=5); curl fallback: Command '['curl', '-q', '-k', '-L', '--silent', '--show-error', '--fail', '--...",
+    "vix": "Cboe official VIX historical index CSV",
+    "gpr": "Caldara-Iacoviello Geopolitical Risk Index; month-end +7 days release lag",
+    "fomc": "Federal Reserve FOMC calendar decision dates",
+    "real_rate_proxy": "US10Y yield minus point-in-time lagged US CPI YoY",
+    "real_rate": "fallback to US10Y minus lagged US CPI YoY proxy",
+    "move_index": "unavailable: no stable free point-in-time MOVE history source in current environment",
+    "fed_funds_futures": "unavailable: Yahoo/CME futures endpoints blocked or not point-in-time stable in current environment",
+    "gld_holdings": "unavailable: SPDR public endpoint currently exposes bar-list PDF, not a stable daily holdings CSV",
+    "gold_etf_net_flow": "proxy only: GLD signed dollar volume flow from traded price and amount; not official ETF creations/redemptions"
   },
   "dataQuality": {
-    "generatedAt": "2026-06-15T10:53:26Z",
+    "generatedAt": "2026-06-15T13:43:04Z",
     "passed": true,
     "checks": {
       "gold": {
@@ -264,6 +496,16 @@
         "missingClose": 0,
         "invalidOhlcRows": 0
       },
+      "vix": {
+        "available": true,
+        "source": "Cboe official VIX historical index CSV",
+        "rows": 3259,
+        "start": "2013-06-25",
+        "end": "2026-06-12",
+        "latestClose": 17.68,
+        "missingClose": 0,
+        "invalidOhlcRows": 0
+      },
       "vixy": {
         "available": true,
         "source": "Eastmoney 107.VIXY: VIX futures ETF proxy (cached fallback after refresh failure)",
@@ -286,38 +528,117 @@
       },
       "cpi": {
         "available": true,
-        "source": "AkShare Jin10 US CPI YoY",
-        "rows": 3255,
-        "start": "2013-07-01",
+        "source": "AkShare Jin10 US CPI YoY; shifted to next month +14 days as point-in-time approximation",
+        "rows": 3246,
+        "start": "2013-07-15",
         "end": "2026-06-12",
-        "missingRows": 4
+        "missingRows": 13
       },
       "cot": {
         "available": true,
-        "source": "AkShare Jin10 CFTC gold positioning",
+        "source": "AkShare Jin10 CFTC gold positioning; shifted +3 calendar days to approximate Friday release",
+        "rows": 3256,
+        "start": "2013-06-28",
+        "end": "2026-06-12",
+        "missingRows": 3
+      },
+      "cftc_managed_money": {
+        "available": true,
+        "source": "CFTC official disaggregated futures-only COT; gold managed money; shifted +3 calendar days",
+        "rows": 3256,
+        "start": "2013-06-28",
+        "end": "2026-06-12",
+        "missingRows": 3
+      },
+      "cpi_mom": {
+        "available": true,
+        "source": "AkShare US CPI MoM actual minus forecast; release-date aligned",
+        "rows": 3245,
+        "start": "2013-07-16",
+        "end": "2026-06-12",
+        "missingRows": 14
+      },
+      "core_cpi_mom": {
+        "available": true,
+        "source": "AkShare US core CPI MoM actual minus forecast; release-date aligned",
+        "rows": 3245,
+        "start": "2013-07-16",
+        "end": "2026-06-12",
+        "missingRows": 14
+      },
+      "nfp": {
+        "available": true,
+        "source": "AkShare US nonfarm payroll actual minus forecast; release-date aligned",
+        "rows": 3252,
+        "start": "2013-07-05",
+        "end": "2026-06-12",
+        "missingRows": 7
+      },
+      "tips_real_yield": {
+        "available": false,
+        "source": "unavailable: text request failed after retries: HTTPSConnectionPool(host='fred.stlouisfed.org', port=443): Read timed out. (read timeout=5); curl fallback: Command '['curl', '-q', '-k', '-L', '--silent', '--show-error', '--fail', '--..."
+      },
+      "real_rate_proxy": {
+        "available": true,
+        "source": "US10Y yield minus point-in-time lagged US CPI YoY",
+        "rows": 799,
+        "start": "2023-05-08",
+        "end": "2026-06-12",
+        "missingRows": 2460
+      },
+      "real_rate": {
+        "available": true,
+        "source": "fallback to US10Y minus lagged US CPI YoY proxy",
+        "rows": 799,
+        "start": "2023-05-08",
+        "end": "2026-06-12",
+        "missingRows": 2460
+      },
+      "gpr": {
+        "available": true,
+        "source": "Caldara-Iacoviello Geopolitical Risk Index; month-end +7 days release lag",
+        "rows": 3230,
+        "start": "2013-08-07",
+        "end": "2026-06-12",
+        "missingRows": 29
+      },
+      "fomc": {
+        "available": true,
+        "source": "Federal Reserve FOMC calendar decision dates",
         "rows": 3259,
         "start": "2013-06-25",
         "end": "2026-06-12",
         "missingRows": 0
       },
-      "real_rate_proxy": {
-        "available": true,
-        "source": "US10Y yield minus US CPI YoY",
-        "rows": 799,
-        "start": "2023-05-08",
-        "end": "2026-06-12",
-        "missingRows": 2460
+      "move_index": {
+        "available": false,
+        "source": "unavailable: no stable free point-in-time MOVE history source in current environment"
+      },
+      "fed_funds_futures": {
+        "available": false,
+        "source": "unavailable: Yahoo/CME futures endpoints blocked or not point-in-time stable in current environment"
+      },
+      "gld_holdings": {
+        "available": false,
+        "source": "unavailable: SPDR public endpoint currently exposes bar-list PDF, not a stable daily holdings CSV"
       }
     }
   },
   "notes": [
-    "VIX 使用 VIXY ETF 作为风险代理。",
-    "实际利率使用 US10Y 减美国 CPI 同比作为 proxy。",
-    "ETF 资金流使用 GLD 成交额的量价方向 proxy。",
+    "VIX 优先使用 Cboe 官方 VIX 历史 CSV；若不可用，风险特征仍可回退参考 VIXY ETF proxy。",
+    "实际利率优先使用 FRED DFII10 10Y TIPS；不可用时回退为 US10Y 减滞后 CPI 同比 proxy。",
+    "CPI 同比按下一月中旬、COT 持仓按报告日后 3 天做 point-in-time 滞后近似。",
+    "CFTC managed money 净多头使用官方 disaggregated futures-only COT，并按报告日后 3 天进入模型。",
+    "CPI、核心 CPI、非农 surprise 使用公布日数据的 actual - forecast，不按数据所属月份提前使用。",
+    "ETF 资金流使用 GLD 量价方向签名成交额 proxy，并不等同于真实 ETF 净申赎。",
+    "MOVE、Fed funds futures implied rate、GLD 官方持仓和黄金 ETF 官方净流入当前没有稳定免费 point-in-time 接口，已在 sources/dataQuality 标为不可用或 proxy。",
+    "GPR 使用 Caldara-Iacoviello 月度地缘政治风险指数，并做月末后 7 天滞后近似。",
+    "FOMC 事件来自美联储会议日历，作为事件日和 proximity 特征。",
     "XGBoost 当前预测的是 triple-barrier meta-label：HMM quality + CUSUM 候选交易是否先触发止盈。",
-    "正式交易信号仅在验证 AUC >= 0.52 时使用 XGBoost；否则回退为 HMM + CUSUM + ATR。",
+    "正式交易信号仅在验证 AUC >= 0.52 且买入阈值下 precision/recall 达标时使用 XGBoost；否则回退为 HMM + CUSUM + ATR。",
+    "实盘模拟使用 t 日收盘信号、t+1 日开盘成交、交易成本和回撤降仓约束。",
     "60 日窗口仅用于训练标签和防止标签泄漏，不作为真实持仓的强制退出时间。",
-    "HMM 退出需要熊市/恐慌且跌破 60 日均线连续确认 10 天。",
+    "HMM 退出需要熊市/恐慌且跌破 60 日均线连续确认 12 天。",
     "研究结果不构成投资建议。"
   ]
 }
