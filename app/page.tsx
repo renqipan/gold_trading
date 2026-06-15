@@ -256,6 +256,45 @@ function EquityChart() {
   );
 }
 
+function AblationPanel() {
+  const rows = latest.ablation ?? [];
+  if (!rows.length) return null;
+
+  return (
+    <section className="panel wide">
+      <div className="sectionHead">
+        <div>
+          <p className="eyebrow">策略归因</p>
+          <h2>A-E 消融实验</h2>
+        </div>
+        <div className="chartScale">
+          <span>用于判断收益来自趋势、HMM、XGBoost 还是 ATR</span>
+        </div>
+      </div>
+      <div className="ablationTable" aria-label="策略消融实验">
+        <div className="ablationRow ablationHead">
+          <span>模块</span>
+          <span>总收益</span>
+          <span>Sharpe</span>
+          <span>最大回撤</span>
+          <span>活跃天数</span>
+        </div>
+        {rows.map((row) => (
+          <div key={row.name} className="ablationRow">
+            <strong>{row.label}</strong>
+            <em className={row.total_return >= latest.backtestMetrics.benchmark_return ? "positive" : "negative"}>
+              {pct(row.total_return, 1)}
+            </em>
+            <em>{num(row.sharpe, 2)}</em>
+            <em className="negative">{pct(row.max_drawdown, 1)}</em>
+            <em>{pct(row.active_day_ratio, 1)}</em>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function StateTape() {
   const recent = prices.slice(-120);
   const start = recent[0];
@@ -371,6 +410,7 @@ export default function Home() {
         <PriceChart />
         <StateTape />
         <EquityChart />
+        <AblationPanel />
 
         <section className="panel">
           <div className="sectionHead">

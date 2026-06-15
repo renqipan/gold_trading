@@ -10,11 +10,12 @@
 ## 当前策略摘要
 
 - 标的：COMEX 迷你黄金连续合约 proxy，东方财富 `101.QO00Y`。
-- HMM 状态：牛市、熊市、震荡、恐慌。
+- HMM 状态：牛市、熊市、震荡、恐慌；状态概率使用前向过滤，显式利用 HMM 转移矩阵。
 - 事件采样：HMM quality 趋势过滤 + CUSUM 波动阈值。
 - XGBoost 目标：`P(profit first)`。
-- 买入：`P(profit first) > 60%`。
-- 卖出：新 CUSUM 事件下 `P(profit first) < 36%`，或 HMM 趋势破坏确认，或 ATR 止盈/止损。
+- 模型闸门：只有验证段 raw AUC >= 0.52 时，正式交易才使用 XGBoost 入场/退出信号。
+- 买入：模型闸门通过时要求 `P(profit first) > 60%`；闸门未通过时回退为 HMM + CUSUM + ATR。
+- 卖出：模型闸门通过时，新 CUSUM 事件下 `P(profit first) < 36%` 可触发退出；无论模型是否启用，HMM 趋势破坏或 ATR 止盈/止损都可触发退出。
 - 持仓：不设置强制持仓到期。60 日只用于训练标签窗口和防止标签泄漏。
 - 风控：最高 100% 仓位、1.0x 杠杆、10 ATR 止盈、4 ATR 止损。
 
@@ -55,9 +56,11 @@ npm run update:data
 - `public/data/gold_price_series.json`
 - `public/data/gold_backtest.json`
 - `local_logs/gold_signals.csv`
+- `local_logs/gold_ablation.csv`
 - `local_logs/data_quality_report.json`
 
 `public/data/*.json` 会被网站读取并提交到 GitHub；`local_logs/` 和 `data/raw/` 只保存在本地。
+网站同时读取 `gold_research_latest.json` 中的 `ablation` 字段，展示买入持有、HMM 趋势过滤、HMM + CUSUM、XGBoost 和 ATR 风控的 A-E 消融实验。
 
 ## 本地运行网站
 

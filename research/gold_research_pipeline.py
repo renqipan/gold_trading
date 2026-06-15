@@ -65,6 +65,7 @@ class RiskConfig:
     hmm_exit_confirmation_days: int = 10
     profit_atr_multiple: float = 10.0
     stop_atr_multiple: float = 4.0
+    xgboost_min_validation_auc: float = 0.52
 
 
 STATE_TO_CODE = {
@@ -659,17 +660,32 @@ def fit_hmm(frame: pd.DataFrame, train_mask: pd.Series) -> tuple[Pipeline, dict[
     if covars.ndim == 3:
         covars = np.array([np.diag(covar) for covar in covars])
     covars = np.maximum(covars, 1e-6)
-    log_probs = []
+    log_emissions = []
     for state in range(hmm.n_components):
         diff = all_transformed - hmm.means_[state]
         log_det = np.log(covars[state]).sum()
         quad = (diff * diff / covars[state]).sum(axis=1)
-        log_prior = np.log(max(hmm.startprob_[state], 1e-12))
-        log_probs.append(log_prior - 0.5 * (log_det + quad))
-    log_probs_array = np.vstack(log_probs).T
-    log_probs_array = log_probs_array - log_probs_array.max(axis=1, keepdims=True)
-    posterior = np.exp(log_probs_array)
-    posterior = posterior / posterior.sum(axis=1, keepdims=True)
+        log_emissions.append(-0.5 * (log_det + quad))
+    log_emissions_array = np.vstack(log_emissions).T
+    log_emissions_array = log_emissions_array - log_emissions_array.max(axis=1, keepdims=True)
+    emissions = np.exp(log_emissions_array)
+    emissions = np.maximum(emissions, 1e-12)
+
+    posterior = np.zeros_like(emissions)
+    previous = np.maximum(hmm.startprob_, 1e-12)
+    previous = previous / previous.sum()
+    transition = np.maximum(hmm.transmat_, 1e-12)
+    transition = transition / transition.sum(axis=1, keepdims=True)
+    for i, emission in enumerate(emissions):
+        prior = previous if i == 0 else previous @ transition
+        filtered = prior * emission
+        total = filtered.sum()
+        if not np.isfinite(total) or total <= 0:
+            filtered = np.full(hmm.n_components, 1.0 / hmm.n_components)
+        else:
+            filtered = filtered / total
+        posterior[i] = filtered
+        previous = filtered
     hidden = posterior.argmax(axis=1)
 
     state_stats = []
@@ -910,14 +926,14 @@ def train_triple_barrier_meta_model(
 
     raw_validation_auc = float("nan")
     raw_test_auc = float("nan")
-    use_inverse = False
+    xgboost_enabled = False
     if len(validation_events) > 20 and validation_events["tb_label"].nunique() == 2:
         raw_validation_auc = float(
             roc_auc_score(validation_events["tb_label"], probabilities.loc[validation_events.index])
         )
-        use_inverse = raw_validation_auc < 0.48
-    oriented = 1 - probabilities if use_inverse else probabilities
-    oriented.name = "p_profit_first"
+        xgboost_enabled = raw_validation_auc >= config.xgboost_min_validation_auc
+    raw_probabilities = probabilities.copy()
+    raw_probabilities.name = "p_profit_first"
 
     if len(test_events) > 20 and test_events["tb_label"].nunique() == 2:
         raw_test_auc = float(roc_auc_score(test_events["tb_label"], probabilities.loc[test_events.index]))
@@ -927,7 +943,14 @@ def train_triple_barrier_meta_model(
         "target": "triple_barrier_profit_first",
         "raw_validation_auc": raw_validation_auc,
         "raw_test_auc": raw_test_auc,
-        "probability_orientation": "inverted_by_validation" if use_inverse else "raw",
+        "probability_orientation": "raw_no_inverse",
+        "xgboost_enabled": bool(xgboost_enabled),
+        "xgboost_min_validation_auc": config.xgboost_min_validation_auc,
+        "xgboost_gate_reason": (
+            "validation_auc_pass"
+            if xgboost_enabled
+            else "validation_auc_below_threshold_or_insufficient_validation_events"
+        ),
         "walk_forward_folds": int(len(importances)),
         "meta_events": int(labels["tb_label"].notna().sum()),
         "meta_positive_rate": float(labels["tb_label"].mean()) if len(labels) else float("nan"),
@@ -941,7 +964,7 @@ def train_triple_barrier_meta_model(
     }
     if len(test_probability_index) > 20 and event_frame.loc[test_probability_index, "tb_label"].nunique() == 2:
         y_test = event_frame.loc[test_probability_index, "tb_label"]
-        p_test = oriented.loc[test_probability_index]
+        p_test = raw_probabilities.loc[test_probability_index]
         try:
             metrics["test_auc"] = float(roc_auc_score(y_test, p_test))
             metrics["test_brier"] = float(brier_score_loss(y_test, p_test))
@@ -955,24 +978,29 @@ def train_triple_barrier_meta_model(
         .mean()
         .sort_values("importance", ascending=False)
     )
-    return last_pipe, oriented, metrics, importance_frame
+    return last_pipe, raw_probabilities, metrics, importance_frame
 
 
 def generate_signals(
     frame: pd.DataFrame,
     probabilities: pd.Series,
     config: RiskConfig,
+    *,
+    use_xgboost: bool = True,
+    use_atr: bool = True,
 ) -> pd.DataFrame:
     signal_frame = frame.copy()
     primary_signal = primary_long_signal(signal_frame, config.primary_signal_mode)
     events = make_meta_events(signal_frame, primary_signal, config)
-    accepted_events = events & (probabilities >= config.up_threshold)
+    accepted_events = events & (probabilities >= config.up_threshold) if use_xgboost else events
     signal_frame["p_profit_first_event"] = probabilities
     signal_frame["p_profit_first"] = probabilities.ffill()
     signal_frame["p_up_30d"] = signal_frame["p_profit_first"]
     signal_frame["tb_event"] = events
     signal_frame["tb_accepted_event"] = accepted_events
     signal_frame["primary_trend_signal"] = primary_signal
+    signal_frame["xgboost_used_for_signal"] = bool(use_xgboost)
+    signal_frame["atr_risk_used_for_signal"] = bool(use_atr)
     signal_frame["payoff_ratio"] = config.profit_atr_multiple / config.stop_atr_multiple
     signal_frame["historical_train_win_rate"] = np.nan
 
@@ -1005,10 +1033,11 @@ def generate_signals(
         )
 
         if in_position:
-            hit_profit = np.isfinite(take_profit_price) and high >= take_profit_price
-            hit_stop = np.isfinite(stop_price) and low <= stop_price
+            hit_profit = use_atr and np.isfinite(take_profit_price) and high >= take_profit_price
+            hit_stop = use_atr and np.isfinite(stop_price) and low <= stop_price
             model_exit = (
-                bool(row.tb_event)
+                use_xgboost
+                and bool(row.tb_event)
                 and np.isfinite(row.p_profit_first_event)
                 and row.p_profit_first_event <= config.down_threshold
             )
@@ -1117,11 +1146,88 @@ def backtest(signal_frame: pd.DataFrame, test_mask: pd.Series) -> tuple[pd.DataF
     return bt, metrics
 
 
+def make_position_signal_frame(frame: pd.DataFrame, position: pd.Series, name: str) -> pd.DataFrame:
+    out = frame.copy()
+    aligned = position.reindex(out.index).fillna(0.0).astype(float).clip(0.0, 1.0)
+    out["position"] = aligned
+    change = aligned.diff().fillna(aligned)
+    out["execution_action"] = np.where(change > 0, "买入", np.where(change < 0, "卖出", "持有/观望"))
+    out["raw_signal"] = np.where(aligned > 0, "long", "flat")
+    out["guide"] = np.where(aligned > 0, "持有", "卖出/空仓")
+    out["atr_stop"] = np.nan
+    out["tb_take_profit"] = np.nan
+    out["tb_event"] = False
+    out["tb_accepted_event"] = False
+    out["primary_trend_signal"] = aligned > 0
+    out["ablation_name"] = name
+    return out
+
+
+def metric_subset(metrics: dict[str, float]) -> dict[str, float]:
+    keys = [
+        "total_return",
+        "benchmark_return",
+        "sharpe",
+        "max_drawdown",
+        "active_day_ratio",
+        "daily_win_rate_when_active",
+        "test_trades",
+        "turnover",
+        "net_total_return_5bps",
+        "net_sharpe_5bps",
+        "net_max_drawdown_5bps",
+    ]
+    return {key: metrics[key] for key in keys if key in metrics}
+
+
+def run_ablation_experiments(
+    frame: pd.DataFrame,
+    probabilities: pd.Series,
+    config: RiskConfig,
+    test_mask: pd.Series,
+) -> list[dict[str, Any]]:
+    primary_signal = primary_long_signal(frame, config.primary_signal_mode)
+    variants = [
+        (
+            "A_buy_and_hold_gold",
+            "买入并持有黄金",
+            make_position_signal_frame(frame, pd.Series(1.0, index=frame.index), "A_buy_and_hold_gold"),
+        ),
+        (
+            "B_hmm_trend_filter",
+            "纯 HMM/趋势过滤",
+            make_position_signal_frame(frame, primary_signal.astype(float), "B_hmm_trend_filter"),
+        ),
+        (
+            "C_hmm_cusum",
+            "HMM + CUSUM，无 XGBoost，无 ATR",
+            generate_signals(frame, probabilities, config, use_xgboost=False, use_atr=False),
+        ),
+        (
+            "D_hmm_cusum_xgboost",
+            "HMM + CUSUM + XGBoost，无 ATR",
+            generate_signals(frame, probabilities, config, use_xgboost=True, use_atr=False),
+        ),
+        (
+            "E_hmm_cusum_xgboost_atr",
+            "HMM + CUSUM + XGBoost + ATR",
+            generate_signals(frame, probabilities, config, use_xgboost=True, use_atr=True),
+        ),
+    ]
+    rows: list[dict[str, Any]] = []
+    for name, label, signals in variants:
+        _, metrics = backtest(signals, test_mask)
+        rows.append({"name": name, "label": label, **metric_subset(metrics)})
+    pd.DataFrame(rows).to_csv(LOCAL_LOGS / "gold_ablation.csv", index=False, encoding="utf-8-sig")
+    return rows
+
+
 def build_outputs(
     signal_frame: pd.DataFrame,
     backtest_frame: pd.DataFrame,
     model_metrics: dict[str, float],
     backtest_metrics: dict[str, float],
+    ablation_metrics: list[dict[str, Any]],
     importances: pd.DataFrame,
     sources: dict[str, str],
     state_mapping: dict[int, str],
@@ -1194,6 +1300,7 @@ def build_outputs(
         "risk": asdict(config),
         "modelMetrics": model_metrics,
         "backtestMetrics": backtest_metrics,
+        "ablation": ablation_metrics,
         "topFeatures": top_features,
         "stateMapping": {str(k): v for k, v in state_mapping.items()},
         "sources": sources,
@@ -1203,6 +1310,7 @@ def build_outputs(
             "实际利率使用 US10Y 减美国 CPI 同比作为 proxy。",
             "ETF 资金流使用 GLD 成交额的量价方向 proxy。",
             "XGBoost 当前预测的是 triple-barrier meta-label：HMM quality + CUSUM 候选交易是否先触发止盈。",
+            f"正式交易信号仅在验证 AUC >= {config.xgboost_min_validation_auc:.2f} 时使用 XGBoost；否则回退为 HMM + CUSUM + ATR。",
             f"{config.prediction_horizon_days} 日窗口仅用于训练标签和防止标签泄漏，不作为真实持仓的强制退出时间。",
             f"HMM 退出需要熊市/恐慌且跌破 60 日均线连续确认 {config.hmm_exit_confirmation_days} 天。",
             "研究结果不构成投资建议。",
@@ -1296,14 +1404,17 @@ def run_pipeline() -> dict[str, Any]:
         test_mask,
         config,
     )
-    signals = generate_signals(features, probabilities, config)
+    xgboost_enabled = bool(model_metrics.get("xgboost_enabled", False))
+    signals = generate_signals(features, probabilities, config, use_xgboost=xgboost_enabled, use_atr=True)
     backtest_frame, backtest_metrics = backtest(signals, test_mask)
+    ablation_metrics = run_ablation_experiments(features, probabilities, config, test_mask)
 
     build_outputs(
         signals,
         backtest_frame,
         model_metrics,
         backtest_metrics,
+        ablation_metrics,
         importances,
         sources,
         state_mapping,
@@ -1322,8 +1433,10 @@ def run_pipeline() -> dict[str, Any]:
         "position": float(latest["position"]),
         "model_metrics": model_metrics,
         "backtest_metrics": backtest_metrics,
+        "ablation": ablation_metrics,
         "outputs": {
             "signals_csv": str(LOCAL_LOGS / "gold_signals.csv"),
+            "ablation_csv": str(LOCAL_LOGS / "gold_ablation.csv"),
             "latest_json": str(PUBLIC_DATA / "gold_research_latest.json"),
             "price_json": str(PUBLIC_DATA / "gold_price_series.json"),
             "backtest_json": str(PUBLIC_DATA / "gold_backtest.json"),

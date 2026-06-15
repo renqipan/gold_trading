@@ -4,13 +4,13 @@
   "assetDetail": "东方财富国际期货 secid=101.QO00Y，作为黄金价格主序列",
   "price": 4224.5,
   "dailyChange": -0.0020669698222406385,
-  "pUp30d": 0.4939020872116089,
-  "pUpHorizon": 0.4939020872116089,
-  "pProfitFirst": 0.4939020872116089,
+  "pUp30d": 0.6002197265625,
+  "pUpHorizon": 0.6002197265625,
+  "pProfitFirst": 0.6002197265625,
   "predictionHorizonDays": 60,
   "predictionTarget": "hmm_quality + cusum_abs 候选交易在 60 个交易日训练标签窗口内，是否先触发 10 ATR 止盈而不是 4 ATR 止损",
-  "marketStateCode": "s2",
-  "marketState": "熊市",
+  "marketStateCode": "s4",
+  "marketState": "恐慌",
   "guide": "卖出/空仓",
   "rawSignal": "flat",
   "position": 0.0,
@@ -41,16 +41,20 @@
     "primary_signal_mode": "hmm_quality",
     "hmm_exit_confirmation_days": 10,
     "profit_atr_multiple": 10.0,
-    "stop_atr_multiple": 4.0
+    "stop_atr_multiple": 4.0,
+    "xgboost_min_validation_auc": 0.52
   },
   "modelMetrics": {
     "target": "triple_barrier_profit_first",
-    "raw_validation_auc": 0.4516594516594517,
-    "raw_test_auc": 0.7190839694656489,
-    "probability_orientation": "inverted_by_validation",
-    "walk_forward_folds": 29,
-    "meta_events": 574,
-    "meta_positive_rate": 0.21777003484320556,
+    "raw_validation_auc": 0.34,
+    "raw_test_auc": 0.709068271425607,
+    "probability_orientation": "raw_no_inverse",
+    "xgboost_enabled": false,
+    "xgboost_min_validation_auc": 0.52,
+    "xgboost_gate_reason": "validation_auc_below_threshold_or_insufficient_validation_events",
+    "walk_forward_folds": 28,
+    "meta_events": 539,
+    "meta_positive_rate": 0.22820037105751392,
     "event_gap_days": 3,
     "event_kind": "cusum_abs",
     "cusum_threshold_mult": 0.8,
@@ -58,68 +62,145 @@
     "profit_atr_multiple": 10.0,
     "stop_atr_multiple": 4.0,
     "vertical_barrier_days": 60,
-    "test_auc": 0.2809160305343511,
-    "test_brier": 0.5345797205875398,
-    "test_accuracy_0_5": 0.3592233009708738
+    "test_auc": 0.709068271425607,
+    "test_brier": 0.26402248201393214,
+    "test_accuracy_0_5": 0.6318407960199005
   },
   "backtestMetrics": {
-    "total_return": 1.5557889079904692,
+    "total_return": 1.3882485751204467,
     "benchmark_return": 1.3087853531903284,
-    "annual_return": 0.32074559484181786,
-    "annual_vol": 0.17340378374940957,
-    "sharpe": 1.8497035526360595,
-    "max_drawdown": -0.17346699770459528,
-    "active_day_ratio": 0.8270588235294117,
-    "daily_win_rate_when_active": 0.5512820512820513,
-    "test_trades": 25,
-    "turnover": 20.0,
-    "net_total_return_2bps": 1.5456049124092917,
-    "net_sharpe_2bps": 1.8407524283665402,
-    "net_max_drawdown_2bps": -0.173635283646414,
-    "net_total_return_5bps": 1.530401172716481,
-    "net_sharpe_5bps": 1.8273148572177254,
-    "net_max_drawdown_5bps": -0.1738877125591417
+    "annual_return": 0.29446245894147327,
+    "annual_vol": 0.17771948647386118,
+    "sharpe": 1.6568946083736436,
+    "max_drawdown": -0.2116559161964452,
+    "active_day_ratio": 0.8964705882352941,
+    "daily_win_rate_when_active": 0.5421052631578948,
+    "test_trades": 20,
+    "turnover": 14.0,
+    "net_total_return_2bps": 1.3815731435427474,
+    "net_sharpe_2bps": 1.6508252078712522,
+    "net_max_drawdown_2bps": -0.2119740634125028,
+    "net_total_return_5bps": 1.371592475392235,
+    "net_sharpe_5bps": 1.6417126906364619,
+    "net_max_drawdown_5bps": -0.2124511638537141
   },
+  "ablation": [
+    {
+      "name": "A_buy_and_hold_gold",
+      "label": "买入并持有黄金",
+      "total_return": 1.3087853531903284,
+      "benchmark_return": 1.3087853531903284,
+      "sharpe": 1.4242957289239733,
+      "max_drawdown": -0.24275345568859574,
+      "active_day_ratio": 0.9988235294117647,
+      "daily_win_rate_when_active": 0.5336481700118064,
+      "test_trades": 0,
+      "turnover": 1.0,
+      "net_total_return_5bps": 1.3076309605137224,
+      "net_sharpe_5bps": 1.4233274225873245,
+      "net_max_drawdown_5bps": -0.24275345568859508
+    },
+    {
+      "name": "B_hmm_trend_filter",
+      "label": "纯 HMM/趋势过滤",
+      "total_return": 0.9693607552391199,
+      "benchmark_return": 1.3087853531903284,
+      "sharpe": 1.271391038771335,
+      "max_drawdown": -0.1357865488737987,
+      "active_day_ratio": 0.7823529411764706,
+      "daily_win_rate_when_active": 0.5436746987951807,
+      "test_trades": 45,
+      "turnover": 46.0,
+      "net_total_return_5bps": 0.9242922524900499,
+      "net_sharpe_5bps": 1.2216407462618863,
+      "net_max_drawdown_5bps": -0.14357019919567082
+    },
+    {
+      "name": "C_hmm_cusum",
+      "label": "HMM + CUSUM，无 XGBoost，无 ATR",
+      "total_return": 1.260206594656705,
+      "benchmark_return": 1.3087853531903284,
+      "sharpe": 1.450613544433317,
+      "max_drawdown": -0.19199297304793983,
+      "active_day_ratio": 0.92,
+      "daily_win_rate_when_active": 0.5397435897435897,
+      "test_trades": 9,
+      "turnover": 8.0,
+      "net_total_return_5bps": 1.2512296676062382,
+      "net_sharpe_5bps": 1.442852515378272,
+      "net_max_drawdown_5bps": -0.1919929730479405
+    },
+    {
+      "name": "D_hmm_cusum_xgboost",
+      "label": "HMM + CUSUM + XGBoost，无 ATR",
+      "total_return": -0.017723979734783568,
+      "benchmark_return": 1.3087853531903284,
+      "sharpe": -0.24337073410365465,
+      "max_drawdown": -0.0546479763912312,
+      "active_day_ratio": 0.015294117647058824,
+      "daily_win_rate_when_active": 0.46153846153846156,
+      "test_trades": 4,
+      "turnover": 4.0,
+      "net_total_return_5bps": -0.01967319416062019,
+      "net_sharpe_5bps": -0.27271466251706,
+      "net_max_drawdown_5bps": -0.05464797639123109
+    },
+    {
+      "name": "E_hmm_cusum_xgboost_atr",
+      "label": "HMM + CUSUM + XGBoost + ATR",
+      "total_return": -0.017723979734783568,
+      "benchmark_return": 1.3087853531903284,
+      "sharpe": -0.24337073410365465,
+      "max_drawdown": -0.0546479763912312,
+      "active_day_ratio": 0.015294117647058824,
+      "daily_win_rate_when_active": 0.46153846153846156,
+      "test_trades": 4,
+      "turnover": 4.0,
+      "net_total_return_5bps": -0.01967319416062019,
+      "net_sharpe_5bps": -0.27271466251706,
+      "net_max_drawdown_5bps": -0.05464797639123109
+    }
+  ],
   "topFeatures": [
     {
       "feature": "vol_ratio_20_60",
-      "importance": 0.04239288717508316
-    },
-    {
-      "feature": "ret_60",
-      "importance": 0.040035612881183624
+      "importance": 0.05210002139210701
     },
     {
       "feature": "vol_20",
-      "importance": 0.03573019430041313
+      "importance": 0.05078207328915596
     },
     {
-      "feature": "adx_14",
-      "importance": 0.03440900146961212
-    },
-    {
-      "feature": "mom_60",
-      "importance": 0.034171491861343384
-    },
-    {
-      "feature": "low_breakdown_120",
-      "importance": 0.03411872312426567
-    },
-    {
-      "feature": "cot_gold_net_z52w",
-      "importance": 0.0321667306125164
+      "feature": "ret_60",
+      "importance": 0.05059767886996269
     },
     {
       "feature": "gld_flow_proxy_20",
-      "importance": 0.031458254903554916
+      "importance": 0.04663876071572304
     },
     {
-      "feature": "ma_cross_20_60",
-      "importance": 0.030417004600167274
+      "feature": "adx_14",
+      "importance": 0.04485243186354637
+    },
+    {
+      "feature": "vol_30",
+      "importance": 0.04010855033993721
+    },
+    {
+      "feature": "vol_10",
+      "importance": 0.039462774991989136
     },
     {
       "feature": "spx_ret_5",
-      "importance": 0.02944049797952175
+      "importance": 0.037587374448776245
+    },
+    {
+      "feature": "mom_60",
+      "importance": 0.03452983871102333
+    },
+    {
+      "feature": "cot_gold_net_z52w",
+      "importance": 0.033460583537817
     }
   ],
   "stateMapping": {
@@ -140,7 +221,7 @@
     "real_rate_proxy": "US10Y yield minus US CPI YoY"
   },
   "dataQuality": {
-    "generatedAt": "2026-06-13T01:21:54Z",
+    "generatedAt": "2026-06-15T10:53:26Z",
     "passed": true,
     "checks": {
       "gold": {
@@ -234,6 +315,7 @@
     "实际利率使用 US10Y 减美国 CPI 同比作为 proxy。",
     "ETF 资金流使用 GLD 成交额的量价方向 proxy。",
     "XGBoost 当前预测的是 triple-barrier meta-label：HMM quality + CUSUM 候选交易是否先触发止盈。",
+    "正式交易信号仅在验证 AUC >= 0.52 时使用 XGBoost；否则回退为 HMM + CUSUM + ATR。",
     "60 日窗口仅用于训练标签和防止标签泄漏，不作为真实持仓的强制退出时间。",
     "HMM 退出需要熊市/恐慌且跌破 60 日均线连续确认 10 天。",
     "研究结果不构成投资建议。"

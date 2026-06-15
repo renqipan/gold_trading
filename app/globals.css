@@ -672,6 +672,54 @@ h2 {
   font-style: normal;
 }
 
+.ablationTable {
+  display: grid;
+  gap: 8px;
+}
+
+.ablationRow {
+  display: grid;
+  grid-template-columns: minmax(260px, 1.4fr) repeat(4, minmax(88px, 0.5fr));
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+}
+
+.ablationHead {
+  background: rgba(229, 193, 88, 0.06);
+  border-color: var(--line);
+  color: var(--faint);
+  font-size: 11px;
+  font-weight: 760;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.ablationRow strong {
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 13px;
+  font-weight: 720;
+}
+
+.ablationRow em {
+  color: var(--gold-soft);
+  font-family: var(--mono);
+  font-size: 13px;
+  font-style: normal;
+  text-align: right;
+}
+
+.ablationRow .positive {
+  color: var(--green);
+}
+
+.ablationRow .negative {
+  color: var(--red);
+}
+
 .disclaimer {
   box-shadow: 0 18px 70px rgba(0, 0, 0, 0.18);
 }
@@ -770,6 +818,22 @@ h2 {
   }
 
   .featureRow span {
+    text-align: left;
+  }
+
+  .ablationRow {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .ablationHead {
+    display: none;
+  }
+
+  .ablationRow strong {
+    grid-column: 1 / -1;
+  }
+
+  .ablationRow em {
     text-align: left;
   }
 }
