@@ -60,17 +60,20 @@ class RiskConfig:
     kelly_fraction: float = 1.0
     retrain_every_days: int = 21
     label_purge_days: int = 60
-    meta_event_gap_days: int = 3
+    meta_event_gap_days: int = 5
     meta_event_kind: str = "cusum_abs"
     cusum_threshold_mult: float = 0.8
     primary_signal_mode: str = "hmm_quality"
-    hmm_exit_confirmation_days: int = 12
+    hmm_exit_confirmation_days: int = 20
     profit_atr_multiple: float = 10.0
-    stop_atr_multiple: float = 5.0
+    stop_atr_multiple: float = 6.0
     xgboost_min_validation_auc: float = 0.52
     xgboost_min_validation_buy_signals: int = 3
     xgboost_min_validation_precision: float = 0.40
     xgboost_min_validation_recall: float = 0.05
+    xgboost_feature_policy: str = "stable_no_macro"
+    xgboost_scale_pos_weight_cap: float = 6.0
+    xgboost_min_validation_strategy_uplift: float = 0.0
     realistic_cost_bps: float = 8.0
     live_soft_drawdown_position: float = 0.5
     live_hard_drawdown_position: float = 0.0
@@ -1017,6 +1020,38 @@ def build_features(data: pd.DataFrame, config: RiskConfig) -> pd.DataFrame:
     frame["high_breakout_120"] = close / close.rolling(120).max() - 1
     frame["low_breakdown_120"] = close / close.rolling(120).min() - 1
     frame["trend_strength"] = (frame["sma_gap_20"] + frame["ma_cross_20_60"] + frame["ma_cross_60_120"]) / 3
+    frame["oc_ret"] = close / frame["gold_open"].replace(0, np.nan) - 1
+    frame["gap_ret"] = frame["gold_open"] / close.shift(1).replace(0, np.nan) - 1
+    frame["close_location_20"] = (
+        (close - frame["gold_low"].rolling(20).min())
+        / (frame["gold_high"].rolling(20).max() - frame["gold_low"].rolling(20).min()).replace(0, np.nan)
+    )
+    frame["close_location_60"] = (
+        (close - frame["gold_low"].rolling(60).min())
+        / (frame["gold_high"].rolling(60).max() - frame["gold_low"].rolling(60).min()).replace(0, np.nan)
+    )
+
+    ema_12 = close.ewm(span=12, adjust=False).mean()
+    ema_26 = close.ewm(span=26, adjust=False).mean()
+    macd = ema_12 - ema_26
+    macd_signal = macd.ewm(span=9, adjust=False).mean()
+    frame["macd_norm"] = macd / close.replace(0, np.nan)
+    frame["macd_signal_norm"] = macd_signal / close.replace(0, np.nan)
+    frame["macd_hist_norm"] = (macd - macd_signal) / close.replace(0, np.nan)
+
+    for window in [20, 60]:
+        band_mid = close.rolling(window).mean()
+        band_std = close.rolling(window).std()
+        band_upper = band_mid + 2 * band_std
+        band_lower = band_mid - 2 * band_std
+        frame[f"bb_percent_b_{window}"] = (close - band_lower) / (band_upper - band_lower).replace(0, np.nan)
+        frame[f"bb_width_{window}"] = (band_upper - band_lower) / band_mid.replace(0, np.nan)
+
+    lowest_14 = frame["gold_low"].rolling(14).min()
+    highest_14 = frame["gold_high"].rolling(14).max()
+    frame["stoch_k_14"] = (close - lowest_14) / (highest_14 - lowest_14).replace(0, np.nan)
+    frame["stoch_d_14"] = frame["stoch_k_14"].rolling(3).mean()
+    frame["williams_r_14"] = (highest_14 - close) / (highest_14 - lowest_14).replace(0, np.nan)
 
     if "gold_volume" in frame:
         frame["gold_volume_z20"] = rolling_zscore(frame["gold_volume"], 20)
@@ -1026,13 +1061,23 @@ def build_features(data: pd.DataFrame, config: RiskConfig) -> pd.DataFrame:
     for name in ["dxy", "us10y", "gld", "vix", "vixy", "spx"]:
         close_column = f"{name}_close"
         if close_column in frame:
+            for window in [1, 2, 3, 10]:
+                frame[f"{name}_ret_{window}"] = frame[close_column].pct_change(window)
             frame[f"{name}_ret_5"] = frame[close_column].pct_change(5)
             frame[f"{name}_ret_20"] = frame[close_column].pct_change(20)
+            frame[f"{name}_z20"] = rolling_zscore(frame[close_column], 20)
             frame[f"{name}_z60"] = rolling_zscore(frame[close_column], 60)
             frame[f"{name}_change_20"] = frame[close_column].diff(20)
+            frame[f"{name}_ret_1_z20"] = rolling_zscore(frame[close_column].pct_change(), 20)
 
     if "spx_close" in frame:
         frame["spx_realized_vol_20"] = frame["spx_close"].pct_change().rolling(20).std() * math.sqrt(252)
+    if "dxy_close" in frame:
+        frame["gold_dxy_ratio_z60"] = rolling_zscore(close / frame["dxy_close"].replace(0, np.nan), 60)
+    if "spx_close" in frame:
+        frame["gold_spx_ratio_z60"] = rolling_zscore(close / frame["spx_close"].replace(0, np.nan), 60)
+    if "vix_close" in frame and "vol_20" in frame:
+        frame["vix_gold_vol_spread_z60"] = rolling_zscore(frame["vix_close"] / 100 - frame["vol_20"], 60)
 
     if "gld_close" in frame and ("gld_amount" in frame or "gld_volume" in frame):
         dollar_volume = frame["gld_amount"] if "gld_amount" in frame else frame["gld_close"] * frame["gld_volume"]
@@ -1104,6 +1149,16 @@ def build_features(data: pd.DataFrame, config: RiskConfig) -> pd.DataFrame:
             frame["fomc_days_to_next"] = pd.Series(next_days, index=frame.index).clip(0, 60) / 60
             frame["fomc_days_since_last"] = pd.Series(last_days, index=frame.index).clip(0, 60) / 60
 
+    for window in [10, 20, 60]:
+        frame[f"ret_skew_{window}"] = frame["ret_1"].rolling(window).skew()
+        frame[f"ret_kurt_{window}"] = frame["ret_1"].rolling(window).kurt()
+        frame[f"ret_autocorr_{window}"] = frame["ret_1"].rolling(window).corr(frame["ret_1"].shift(1))
+        frame[f"downside_vol_{window}"] = frame["ret_1"].clip(upper=0).rolling(window).std() * math.sqrt(252)
+        frame[f"upside_vol_{window}"] = frame["ret_1"].clip(lower=0).rolling(window).std() * math.sqrt(252)
+        frame[f"win_rate_{window}"] = (frame["ret_1"] > 0).rolling(window).mean()
+    frame["range_pct_z20"] = rolling_zscore(frame["range_pct"], 20)
+    frame["atr_pct_z60"] = rolling_zscore(frame["atr_pct"], 60)
+
     frame = add_trend_quality_features(frame)
 
     return frame
@@ -1126,6 +1181,23 @@ def feature_columns(frame: pd.DataFrame) -> list[str]:
         "high_breakout_",
         "low_breakdown_",
         "trend_strength",
+        "oc_ret",
+        "gap_ret",
+        "close_location_",
+        "macd_",
+        "bb_",
+        "stoch_",
+        "williams_",
+        "ret_skew_",
+        "ret_kurt_",
+        "ret_autocorr_",
+        "downside_vol_",
+        "upside_vol_",
+        "win_rate_",
+        "gold_dxy_ratio_",
+        "gold_spx_ratio_",
+        "vix_gold_vol_spread_",
+        "atr_pct_z",
         "adx_",
         "rsi_",
         "donchian_",
@@ -1145,7 +1217,21 @@ def feature_columns(frame: pd.DataFrame) -> list[str]:
         "hmm_prob_",
         "state_",
     )
-    allowed_suffixes = ("_ret_5", "_ret_20", "_z60", "_z252", "_change_20", "_z20", "_z52w", "_chg_4w")
+    allowed_suffixes = (
+        "_ret_1",
+        "_ret_2",
+        "_ret_3",
+        "_ret_5",
+        "_ret_10",
+        "_ret_20",
+        "_ret_1_z20",
+        "_z20",
+        "_z60",
+        "_z252",
+        "_change_20",
+        "_z52w",
+        "_chg_4w",
+    )
     cols: list[str] = []
     for column in frame.columns:
         if column in forbidden:
@@ -1158,6 +1244,28 @@ def feature_columns(frame: pd.DataFrame) -> list[str]:
         if allowed and pd.api.types.is_numeric_dtype(frame[column]):
             cols.append(column)
     return cols
+
+
+def meta_feature_columns(frame: pd.DataFrame, policy: str = "stable_no_macro") -> list[str]:
+    cols = [column for column in feature_columns(frame) if column != "hmm_raw_state"]
+    if policy == "all":
+        return cols
+    if policy != "stable_no_macro":
+        raise ValueError(f"unknown XGBoost feature policy: {policy}")
+
+    unstable_macro_prefixes = (
+        "cot_",
+        "cftc_",
+        "gpr_",
+        "cpi_mom",
+        "core_cpi_mom",
+        "nfp_",
+        "real_rate",
+        "real_rate_proxy",
+        "tips_",
+        "fomc_",
+    )
+    return [column for column in cols if not column.startswith(unstable_macro_prefixes)]
 
 
 def hmm_feature_columns(frame: pd.DataFrame) -> list[str]:
@@ -1413,17 +1521,26 @@ def triple_barrier_labels(
     return pd.DataFrame(rows).set_index("date").sort_index()
 
 
-def fit_meta_xgb_model() -> XGBClassifier:
+def fit_meta_xgb_model(target: pd.Series | None = None, config: RiskConfig | None = None) -> XGBClassifier:
+    scale_pos_weight = 1.0
+    if target is not None and len(target):
+        y = target.astype(int)
+        positives = max(float((y == 1).sum()), 1.0)
+        negatives = max(float((y == 0).sum()), 1.0)
+        cap = config.xgboost_scale_pos_weight_cap if config is not None else 6.0
+        scale_pos_weight = min(negatives / positives, cap)
     return XGBClassifier(
-        n_estimators=120,
-        max_depth=2,
+        n_estimators=170,
+        max_depth=1,
         learning_rate=0.04,
-        subsample=0.80,
-        colsample_bytree=0.76,
-        reg_lambda=8.0,
-        reg_alpha=0.30,
+        subsample=0.85,
+        colsample_bytree=0.75,
+        reg_lambda=14.0,
+        reg_alpha=1.20,
         min_child_weight=8,
         gamma=0.05,
+        scale_pos_weight=scale_pos_weight,
+        max_delta_step=1,
         objective="binary:logistic",
         eval_metric="logloss",
         random_state=7,
@@ -1464,8 +1581,9 @@ def train_triple_barrier_meta_model(
         predict_events = predict_events[predict_events["is_meta_event"]]
         if len(train_events) < 80 or len(predict_events) == 0 or train_events["tb_label"].nunique() < 2:
             continue
-        pipe = Pipeline([("imputer", SimpleImputer(strategy="median")), ("model", fit_meta_xgb_model())])
-        pipe.fit(train_events[cols], train_events["tb_label"])
+        train_target = train_events["tb_label"].astype(int)
+        pipe = Pipeline([("imputer", SimpleImputer(strategy="median")), ("model", fit_meta_xgb_model(train_target, config))])
+        pipe.fit(train_events[cols], train_target)
         probabilities.loc[predict_events.index] = pipe.predict_proba(predict_events[cols])[:, 1]
         importances.append(
             pd.DataFrame(
@@ -1495,13 +1613,17 @@ def train_triple_barrier_meta_model(
     raw_validation_auc = float("nan")
     raw_test_auc = float("nan")
     xgboost_enabled = False
+    xgboost_statistical_valid = False
     validation_buy_signals = 0
     validation_buy_precision = float("nan")
     validation_buy_recall = float("nan")
+    validation_base_rate = float("nan")
+    validation_buy_precision_lift = float("nan")
     if len(validation_events) > 20 and validation_events["tb_label"].nunique() == 2:
         y_validation = validation_events["tb_label"].astype(int)
         p_validation = probabilities.loc[validation_events.index]
         validation_buy_pred = p_validation >= config.up_threshold
+        validation_base_rate = float(y_validation.mean())
         raw_validation_auc = float(
             roc_auc_score(y_validation, p_validation)
         )
@@ -1512,8 +1634,11 @@ def train_triple_barrier_meta_model(
         validation_buy_recall = float(
             recall_score(y_validation, validation_buy_pred, zero_division=0)
         )
+        if validation_base_rate > 0:
+            validation_buy_precision_lift = validation_buy_precision / validation_base_rate
+        xgboost_statistical_valid = raw_validation_auc >= config.xgboost_min_validation_auc
         xgboost_enabled = (
-            raw_validation_auc >= config.xgboost_min_validation_auc
+            xgboost_statistical_valid
             and validation_buy_signals >= config.xgboost_min_validation_buy_signals
             and validation_buy_precision >= config.xgboost_min_validation_precision
             and validation_buy_recall >= config.xgboost_min_validation_recall
@@ -1530,18 +1655,31 @@ def train_triple_barrier_meta_model(
         "raw_validation_auc": raw_validation_auc,
         "raw_test_auc": raw_test_auc,
         "probability_orientation": "raw_no_inverse",
+        "feature_policy": config.xgboost_feature_policy,
+        "feature_count": int(len(cols)),
+        "scale_pos_weight_cap": config.xgboost_scale_pos_weight_cap,
+        "model_variant": "regularized_stump_weighted",
+        "xgboost_statistical_valid": bool(xgboost_statistical_valid),
+        "xgboost_model_gate_pass": bool(xgboost_enabled),
+        "xgboost_strategy_gate_pass": False,
         "xgboost_enabled": bool(xgboost_enabled),
         "xgboost_min_validation_auc": config.xgboost_min_validation_auc,
+        "validation_base_rate": validation_base_rate,
         "validation_buy_signals": validation_buy_signals,
         "validation_buy_precision": validation_buy_precision,
+        "validation_buy_precision_lift": validation_buy_precision_lift,
         "validation_buy_recall": validation_buy_recall,
         "xgboost_min_validation_buy_signals": config.xgboost_min_validation_buy_signals,
         "xgboost_min_validation_precision": config.xgboost_min_validation_precision,
         "xgboost_min_validation_recall": config.xgboost_min_validation_recall,
         "xgboost_gate_reason": (
-            "validation_auc_pass"
+            "trading_gate_pass"
             if xgboost_enabled
-            else "validation_trade_quality_below_threshold"
+            else (
+                "statistical_validation_pass_trade_quality_below_threshold"
+                if xgboost_statistical_valid
+                else "validation_auc_below_threshold"
+            )
         ),
         "walk_forward_folds": int(len(importances)),
         "meta_events": int(labels["tb_label"].notna().sum()),
@@ -1826,6 +1964,47 @@ def backtest(signal_frame: pd.DataFrame, test_mask: pd.Series) -> tuple[pd.DataF
         metrics[f"net_sharpe_{cost_bps}bps"] = float(net_annual_return / net_annual_vol) if net_annual_vol else 0.0
         metrics[f"net_max_drawdown_{cost_bps}bps"] = float(net_drawdown.min())
     return bt, metrics
+
+
+def apply_xgboost_strategy_gate(
+    frame: pd.DataFrame,
+    probabilities: pd.Series,
+    config: RiskConfig,
+    validation_mask: pd.Series,
+    model_metrics: dict[str, Any],
+) -> dict[str, Any]:
+    fallback_signals = generate_signals(frame, probabilities, config, use_xgboost=False, use_atr=True)
+    xgboost_signals = generate_signals(frame, probabilities, config, use_xgboost=True, use_atr=True)
+    _, fallback_metrics = backtest(fallback_signals, validation_mask)
+    _, xgboost_metrics = backtest(xgboost_signals, validation_mask)
+
+    return_uplift = xgboost_metrics["total_return"] - fallback_metrics["total_return"]
+    sharpe_uplift = xgboost_metrics["sharpe"] - fallback_metrics["sharpe"]
+    strategy_gate_pass = (
+        return_uplift >= config.xgboost_min_validation_strategy_uplift
+        and sharpe_uplift >= 0
+    )
+    model_gate_pass = bool(model_metrics.get("xgboost_enabled", False))
+    model_metrics.update(
+        {
+            "xgboost_model_gate_pass": model_gate_pass,
+            "xgboost_strategy_gate_pass": bool(strategy_gate_pass),
+            "xgboost_min_validation_strategy_uplift": config.xgboost_min_validation_strategy_uplift,
+            "validation_fallback_total_return": float(fallback_metrics["total_return"]),
+            "validation_xgboost_hard_total_return": float(xgboost_metrics["total_return"]),
+            "validation_xgboost_hard_return_uplift": float(return_uplift),
+            "validation_fallback_sharpe": float(fallback_metrics["sharpe"]),
+            "validation_xgboost_hard_sharpe": float(xgboost_metrics["sharpe"]),
+            "validation_xgboost_hard_sharpe_uplift": float(sharpe_uplift),
+        }
+    )
+    if model_gate_pass and not strategy_gate_pass:
+        model_metrics["xgboost_enabled"] = False
+        model_metrics["xgboost_gate_reason"] = "model_gate_pass_strategy_uplift_below_threshold"
+    elif model_gate_pass and strategy_gate_pass:
+        model_metrics["xgboost_enabled"] = True
+        model_metrics["xgboost_gate_reason"] = "model_and_strategy_gate_pass"
+    return model_metrics
 
 
 def backtest_next_open(
@@ -2126,7 +2305,10 @@ def build_outputs(
             "GPR 使用 Caldara-Iacoviello 月度地缘政治风险指数，并做月末后 7 天滞后近似。",
             "FOMC 事件来自美联储会议日历，作为事件日和 proximity 特征。",
             "XGBoost 当前预测的是 triple-barrier meta-label：HMM quality + CUSUM 候选交易是否先触发止盈。",
+            "XGBoost 使用 stable_no_macro 特征策略：保留技术、主要市场变量和 HMM 状态，剔除低频宏观、CFTC、GPR、surprise 和实际利率变量，降低非平稳特征对验证段的伤害。",
+            "XGBoost 训练器使用强正则 stump，并加入 MACD、布林带、随机指标、收益分布和短滞后跨市场特征，优先改善高分信号尾部稳定性。",
             f"正式交易信号仅在验证 AUC >= {config.xgboost_min_validation_auc:.2f} 且买入阈值下 precision/recall 达标时使用 XGBoost；否则回退为 HMM + CUSUM + ATR。",
+            "即使 XGBoost 模型闸门通过，硬过滤策略也必须在验证段相对 HMM/CUSUM/ATR fallback 带来收益和 Sharpe 增益，否则不接管正式交易。",
             "实盘模拟使用 t 日收盘信号、t+1 日开盘成交、交易成本和回撤降仓约束。",
             f"{config.prediction_horizon_days} 日窗口仅用于训练标签和防止标签泄漏，不作为真实持仓的强制退出时间。",
             f"HMM 退出需要熊市/恐慌且跌破 60 日均线连续确认 {config.hmm_exit_confirmation_days} 天。",
@@ -2199,6 +2381,7 @@ def run_pipeline() -> dict[str, Any]:
     train_end = usable.index[train_split_at]
     validation_end = usable.index[validation_split_at]
     train_mask = features.index <= train_end
+    validation_mask = (features.index > train_end) & (features.index <= validation_end)
     test_mask = features.index > validation_end
 
     _, state_mapping, state_frame = fit_hmm(features, train_mask)
@@ -2206,8 +2389,7 @@ def run_pipeline() -> dict[str, Any]:
     state_dummies = pd.get_dummies(features["market_state_code"], prefix="state", dtype=float)
     features = features.join(state_dummies)
 
-    cols = feature_columns(features)
-    cols = [column for column in cols if column not in {"hmm_raw_state"}]
+    cols = meta_feature_columns(features, config.xgboost_feature_policy)
     primary_signal = primary_long_signal(features, config.primary_signal_mode)
     meta_events = make_meta_events(features, primary_signal, config)
     meta_labels = triple_barrier_labels(features, meta_events, config)
@@ -2230,6 +2412,7 @@ def run_pipeline() -> dict[str, Any]:
         test_mask,
         config,
     )
+    model_metrics = apply_xgboost_strategy_gate(features, probabilities, config, validation_mask, model_metrics)
     xgboost_enabled = bool(model_metrics.get("xgboost_enabled", False))
     signals = generate_signals(features, probabilities, config, use_xgboost=xgboost_enabled, use_atr=True)
     backtest_frame, backtest_metrics = backtest(signals, test_mask)

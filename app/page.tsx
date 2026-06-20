@@ -362,9 +362,14 @@ export default function Home() {
   const modelScore = modelProbability * 100;
   const featureMax = Math.max(0.000001, ...latest.topFeatures.map((item) => item.importance));
   const modelContext = latest.isMetaEvent ? "当前候选交易" : "最近候选交易延续";
+  const gateReason = latest.modelMetrics.xgboost_gate_reason;
   const modelGateText = latest.xgboostEnabled
-    ? "XGBoost 已通过验证闸门，可参与入场/退出判断。"
-    : "XGBoost 未通过验证闸门，今日操作由 HMM/CUSUM/ATR 风控决定。";
+    ? "XGBoost 已通过模型和策略验证闸门，可参与入场/退出判断。"
+    : latest.modelMetrics.xgboost_model_gate_pass && gateReason === "model_gate_pass_strategy_uplift_below_threshold"
+      ? "XGBoost 高分信号已通过模型闸门，但验证段硬过滤未带来策略增益，今日操作仍由 HMM/CUSUM/ATR 风控决定。"
+      : latest.modelMetrics.xgboost_statistical_valid
+      ? "XGBoost 排序验证已修复，但高阈值交易质量未达闸门，今日操作仍由 HMM/CUSUM/ATR 风控决定。"
+      : "XGBoost 排序验证未通过，今日操作由 HMM/CUSUM/ATR 风控决定。";
 
   return (
     <main>

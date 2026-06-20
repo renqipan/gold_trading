@@ -37,6 +37,18 @@ if (typeof latest.isMetaEvent !== "boolean" || typeof latest.isAcceptedEvent !==
 if (typeof latest.xgboostEnabled !== "boolean") {
   throw new Error("latest.xgboostEnabled is missing");
 }
+if (typeof latest.modelMetrics.xgboost_statistical_valid !== "boolean") {
+  throw new Error("latest.modelMetrics.xgboost_statistical_valid is missing");
+}
+if (typeof latest.modelMetrics.xgboost_model_gate_pass !== "boolean") {
+  throw new Error("latest.modelMetrics.xgboost_model_gate_pass is missing");
+}
+if (typeof latest.modelMetrics.xgboost_strategy_gate_pass !== "boolean") {
+  throw new Error("latest.modelMetrics.xgboost_strategy_gate_pass is missing");
+}
+if (latest.modelMetrics.feature_policy !== latest.risk.xgboost_feature_policy) {
+  throw new Error("XGBoost feature policy mismatch between modelMetrics and risk");
+}
 
 const lastPrice = prices.at(-1);
 const previousPrice = prices.at(-2);
