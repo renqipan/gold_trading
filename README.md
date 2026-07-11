@@ -10,19 +10,21 @@
 ## 当前策略摘要
 
 - 标的：COMEX 迷你黄金连续合约 proxy，东方财富 `101.QO00Y`。
-- HMM 状态：牛市、熊市、震荡、恐慌；状态概率使用前向过滤，显式利用 HMM 转移矩阵。
-- 事件采样：HMM quality 趋势过滤 + CUSUM 波动阈值。
+- HMM 状态：牛市、熊市、震荡、恐慌；状态概率使用前向过滤，并按约 252 个交易日 expanding walk-forward 重训，避免长期使用 2021 年的静态状态模型。
+- 事件采样：120 日长期技术趋势 + CUSUM 波动阈值；HMM 主要用于状态监控和退出风控。
 - XGBoost 目标：`P(profit first)`。
-- XGBoost 输入策略：使用 `stable_no_macro` 特征集，保留技术、主要市场变量和 HMM 状态，剔除低频宏观/CFTC/GPR/surprise/实际利率特征；新增 MACD、布林带、随机指标、短滞后跨市场收益和收益分布特征。
-- XGBoost 训练策略：使用强正则 `max_depth=1` stump XGBoost，并对正负样本不平衡加权，降低高分尾部过拟合。
+- XGBoost 输入策略：使用 34 个 `regime_core` 状态特征，重点加入 120/252 日收益、长期均线距离、长期波动、趋势年龄和长期黄金/美元比率，减少短期振荡指标主导的踏空问题。
+- XGBoost 训练策略：使用强正则 `max_depth=1` stump，不使用会扭曲概率尺度的类别权重；模型只过滤候选入场，不再用新事件分数强制退出已有趋势仓位。
 - 模型闸门：只有验证段 raw AUC >= 0.52，且在买入阈值下有足够验证信号、precision 和 recall 达标时，XGBoost 才通过模型闸门。
-- 策略闸门：模型闸门通过后，还必须在验证段硬过滤策略中相对 HMM/CUSUM/ATR fallback 带来收益和 Sharpe 增益，正式交易才使用 XGBoost 入场/退出信号。
-- 买入：模型闸门通过时要求 `P(profit first) > 60%`；闸门未通过时回退为 HMM + CUSUM + ATR。
-- 卖出：模型闸门通过时，新 CUSUM 事件下 `P(profit first) < 36%` 可触发退出；无论模型是否启用，HMM 趋势破坏或 ATR 止盈/止损都可触发退出。
+- 策略闸门：模型闸门通过后，还必须在验证段入场过滤策略中相对 HMM/CUSUM/ATR fallback 带来收益和 Sharpe 增益，正式交易才使用 XGBoost 入场信号。
+- 买入：XGBoost 作为低分尾部否决器；当前验证选择阈值 7.5%，保留约 71% 候选事件，并要求覆盖率、precision lift、收益和 Sharpe 同时过闸。
+- 卖出：XGBoost 默认不负责退出；HMM 趋势破坏或 ATR 止盈/止损触发退出。
 - 持仓：不设置强制持仓到期。60 日只用于训练标签窗口和防止标签泄漏。
-- 风控：最高 100% 仓位、1.0x 杠杆、10 ATR 止盈、6 ATR 止损；HMM 熊市/恐慌跌破 60 日均线连续确认 20 天退出。
-- 实盘模拟：额外输出 `t` 日收盘信号、`t+1` 日开盘成交、8bps 交易成本和回撤降仓约束下的模拟结果。
+- 风控：最高 100% 仓位、1.0x 杠杆；增长型仓位按 `12% / 初始止损距离` 缩放，保证初始 6 ATR 止损对应的组合计划损失不超过 12%；10 ATR 止盈，HMM 熊市/恐慌跌破 60 日均线连续确认 20 天退出。
+- 正式回测：`t` 日收盘信号、`t+1` 日开盘成交，ATR 止盈止损按盘中障碍价格结算；禁止同一交易日退出后立即重入，并使用标准日收益 Sharpe。
+- 实盘模拟：额外输出 `t` 日收盘信号、`t+1` 日开盘成交、盘中 ATR 障碍、双边 8bps 交易成本和回撤降仓约束下的模拟结果。
 - 数据修正：CPI 同比按下一月中旬滞后，COT 按报告日后 3 天滞后；实际利率优先使用 FRED `DFII10`，取不到时回退为 `US10Y - 滞后 CPI YoY`；Cboe VIX、CFTC managed money、CPI/核心 CPI/非农 surprise、GPR 和 FOMC 作为宏观/事件特征接入。
+- 行情容灾：东方财富历史主序列不可用时，只追加 AkShare/Sina 的 GC、GLD、VIXY、标普500和美债收益率新日期；DXY 使用 UUP 日收益代理延伸，原历史区间不换源。
 
 ## 安装网站依赖
 
@@ -49,6 +51,12 @@ source .venv-research/bin/activate
 python research/gold_research_pipeline.py --json
 ```
 
+外部数据源不可用或需要严格复现实验时，可只使用本地缓存：
+
+```bash
+python research/gold_research_pipeline.py --offline --json
+```
+
 也可以直接使用项目脚本：
 
 ```bash
@@ -64,6 +72,8 @@ npm run update:data
 - `local_logs/gold_ablation.csv`
 - `local_logs/gold_model_validation.csv`
 - `local_logs/gold_live_execution.csv`
+- `local_logs/gold_backtest_yearly.csv`
+- `local_logs/gold_parameter_stability.csv`
 - `local_logs/data_quality_report.json`
 
 `public/data/*.json` 会被网站读取并提交到 GitHub；`local_logs/` 和 `data/raw/` 只保存在本地。

@@ -11,7 +11,7 @@ import time
 import urllib.parse
 import warnings
 import zipfile
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from io import StringIO
 from pathlib import Path
 from typing import Any
@@ -21,7 +21,14 @@ import pandas as pd
 import requests
 from hmmlearn.hmm import GaussianHMM
 from sklearn.impute import SimpleImputer
-from sklearn.metrics import accuracy_score, brier_score_loss, precision_score, recall_score, roc_auc_score
+from sklearn.metrics import (
+    accuracy_score,
+    average_precision_score,
+    brier_score_loss,
+    precision_score,
+    recall_score,
+    roc_auc_score,
+)
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from xgboost import XGBClassifier
@@ -33,6 +40,8 @@ ROOT = Path(__file__).resolve().parents[1]
 PUBLIC_DATA = ROOT / "public" / "data"
 LOCAL_LOGS = ROOT / "local_logs"
 RAW_DATA = ROOT / "data" / "raw"
+MARKET_SOURCE_METADATA = RAW_DATA / "market_source_metadata.json"
+OFFLINE_MODE = False
 
 EASTMONEY_KLINE = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
 EASTMONEY_SEARCH = "https://searchapi.eastmoney.com/api/suggest/get"
@@ -47,12 +56,15 @@ REQUEST_USER_AGENTS = [
 
 @dataclass(frozen=True)
 class RiskConfig:
+    train_end_date: str = "2021-02-23"
+    validation_end_date: str = "2023-02-27"
+    forward_holdout_start_date: str = "2026-06-20"
     prediction_horizon_days: int = 60
-    up_threshold: float = 0.60
+    up_threshold: float = 0.075
     down_threshold: float = 0.36
     max_position: float = 1.0
     max_leverage: float = 1.0
-    max_single_loss: float = 0.06
+    max_single_loss: float = 0.12
     max_drawdown_soft: float = 0.18
     max_drawdown_hard: float = 0.30
     atr_window: int = 14
@@ -63,17 +75,22 @@ class RiskConfig:
     meta_event_gap_days: int = 5
     meta_event_kind: str = "cusum_abs"
     cusum_threshold_mult: float = 0.8
-    primary_signal_mode: str = "hmm_quality"
+    primary_signal_mode: str = "trend_slow"
+    hmm_retrain_every_days: int = 252
     hmm_exit_confirmation_days: int = 20
     profit_atr_multiple: float = 10.0
     stop_atr_multiple: float = 6.0
     xgboost_min_validation_auc: float = 0.52
-    xgboost_min_validation_buy_signals: int = 3
-    xgboost_min_validation_precision: float = 0.40
+    xgboost_min_validation_buy_signals: int = 15
+    xgboost_min_validation_precision: float = 0.20
     xgboost_min_validation_recall: float = 0.05
-    xgboost_feature_policy: str = "stable_no_macro"
-    xgboost_scale_pos_weight_cap: float = 6.0
-    xgboost_min_validation_strategy_uplift: float = 0.0
+    xgboost_feature_policy: str = "regime_core"
+    xgboost_scale_pos_weight_cap: float = 1.0
+    xgboost_min_validation_strategy_uplift: float = 0.002
+    xgboost_min_precision_lift: float = 1.05
+    xgboost_min_validation_coverage: float = 0.65
+    xgboost_entry_thresholds: tuple[float, ...] = (0.05, 0.075, 0.10, 0.125, 0.15, 0.20, 0.25)
+    xgboost_use_model_exit: bool = False
     realistic_cost_bps: float = 8.0
     live_soft_drawdown_position: float = 0.5
     live_hard_drawdown_position: float = 0.0
@@ -112,6 +129,21 @@ def compact_error(text: str, max_length: int = 220) -> str:
     if len(line) <= max_length:
         return line
     return f"{line[:max_length].rstrip()}..."
+
+
+def json_safe(value: Any) -> Any:
+    """Convert numpy scalars and non-finite values to strict JSON types."""
+    if isinstance(value, dict):
+        return {str(key): json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [json_safe(item) for item in value]
+    if isinstance(value, np.integer):
+        return int(value)
+    if isinstance(value, (np.floating, float)):
+        return None if not np.isfinite(value) else float(value)
+    if isinstance(value, np.bool_):
+        return bool(value)
+    return value
 
 
 def random_request_pause(attempt: int) -> None:
@@ -220,6 +252,8 @@ def curl_bytes(full_url: str, headers: dict[str, str], timeout: int) -> bytes:
 
 
 def request_json(url: str, params: dict[str, Any], timeout: int = 12, attempts: int = 4) -> dict[str, Any]:
+    if OFFLINE_MODE:
+        raise RuntimeError("offline mode")
     last_error: Exception | None = None
     with requests.Session() as session:
         session.trust_env = False
@@ -241,6 +275,8 @@ def request_json(url: str, params: dict[str, Any], timeout: int = 12, attempts: 
 
 
 def request_text(url: str, timeout: int = 20, attempts: int = 3) -> str:
+    if OFFLINE_MODE:
+        raise RuntimeError("offline mode")
     last_error: Exception | None = None
     with requests.Session() as session:
         session.trust_env = False
@@ -260,6 +296,8 @@ def request_text(url: str, timeout: int = 20, attempts: int = 3) -> str:
 
 
 def request_bytes(url: str, timeout: int = 30, attempts: int = 3) -> bytes:
+    if OFFLINE_MODE:
+        raise RuntimeError("offline mode")
     last_error: Exception | None = None
     with requests.Session() as session:
         session.trust_env = False
@@ -362,6 +400,8 @@ def fetch_search_quote_id(term: str) -> list[dict[str, Any]]:
 
 
 def fetch_cpi_yoy() -> pd.DataFrame:
+    if OFFLINE_MODE:
+        return pd.DataFrame(columns=["us_cpi_yoy"], index=pd.DatetimeIndex([], name="date"))
     try:
         import akshare as ak
 
@@ -377,6 +417,11 @@ def fetch_cpi_yoy() -> pd.DataFrame:
 
 
 def fetch_cot_gold() -> pd.DataFrame:
+    if OFFLINE_MODE:
+        return pd.DataFrame(
+            columns=["cot_gold_long", "cot_gold_short", "cot_gold_net"],
+            index=pd.DatetimeIndex([], name="date"),
+        )
     try:
         import akshare as ak
 
@@ -407,9 +452,9 @@ def fetch_cftc_managed_money_gold(start_year: int = 2013, end_year: int | None =
     rows: list[pd.DataFrame] = []
     for year in range(start_year, end_year + 1):
         zip_path = RAW_DATA / f"cftc_fut_disagg_{year}.zip"
-        cache_is_fresh = zip_path.exists() and (
+        cache_is_fresh = zip_path.exists() and (OFFLINE_MODE or (
             year < end_year or (time.time() - zip_path.stat().st_mtime) < 3 * 24 * 60 * 60
-        )
+        ))
         if not cache_is_fresh:
             url = f"https://www.cftc.gov/files/dea/history/fut_disagg_txt_{year}.zip"
             try:
@@ -477,6 +522,16 @@ def fetch_cftc_managed_money_gold(start_year: int = 2013, end_year: int | None =
 
 
 def fetch_macro_surprise(fn_name: str, prefix: str) -> pd.DataFrame:
+    if OFFLINE_MODE:
+        return pd.DataFrame(
+            columns=[
+                f"{prefix}_actual",
+                f"{prefix}_forecast",
+                f"{prefix}_previous",
+                f"{prefix}_surprise",
+            ],
+            index=pd.DatetimeIndex([], name="date"),
+        )
     try:
         import akshare as ak
 
@@ -520,6 +575,73 @@ def load_cached_csv(path: Path) -> pd.DataFrame:
         return pd.DataFrame(index=pd.DatetimeIndex([], name="date"))
     frame = pd.read_csv(path, parse_dates=["date"])
     return frame.set_index("date").sort_index()
+
+
+def append_new_market_rows(cached: pd.DataFrame, fresh: pd.DataFrame) -> pd.DataFrame:
+    """Append only dates beyond the cache, preserving the original historical vendor."""
+    if cached.empty or fresh.empty:
+        return cached if fresh.empty else fresh
+    new_rows = fresh.loc[fresh.index > cached.index.max()].copy()
+    if new_rows.empty:
+        return cached
+    all_columns = cached.columns.union(new_rows.columns)
+    return pd.concat(
+        [cached.reindex(columns=all_columns), new_rows.reindex(columns=all_columns)]
+    ).sort_index()
+
+
+def load_market_source_metadata() -> dict[str, str]:
+    if not MARKET_SOURCE_METADATA.exists():
+        return {}
+    try:
+        return json.loads(MARKET_SOURCE_METADATA.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def fetch_alternative_market_history(name: str, cached: pd.DataFrame) -> tuple[pd.DataFrame, str]:
+    """Fetch current rows from independent Sina/AkShare endpoints when Eastmoney is down."""
+    import akshare as ak
+
+    if name == "gold":
+        fresh = ak.futures_foreign_hist(symbol="GC").copy()
+        source = "AkShare/Sina COMEX gold continuous GC extension"
+    elif name in {"gld", "vixy"}:
+        fresh = ak.stock_us_daily(symbol=name.upper(), adjust="").copy()
+        source = f"AkShare/Sina {name.upper()} daily extension"
+    elif name == "spx":
+        fresh = ak.index_us_stock_sina(symbol=".INX").copy()
+        source = "AkShare/Sina S&P 500 .INX extension"
+    elif name == "us10y":
+        start = (cached.index.max() - pd.Timedelta(days=14)).strftime("%Y%m%d")
+        fresh = ak.bond_zh_us_rate(start_date=start).rename(
+            columns={"日期": "date", "美国国债收益率10年": "close"}
+        )
+        fresh["open"] = fresh["close"]
+        fresh["high"] = fresh["close"]
+        fresh["low"] = fresh["close"]
+        source = "AkShare US Treasury 10Y daily yield extension"
+    elif name == "dxy":
+        uup = ak.stock_us_daily(symbol="UUP", adjust="").copy()
+        uup["date"] = pd.to_datetime(uup["date"], errors="coerce")
+        uup = uup.dropna(subset=["date"]).set_index("date").sort_index()
+        anchor_rows = uup.loc[uup.index <= cached.index.max()]
+        if anchor_rows.empty:
+            return pd.DataFrame(), ""
+        anchor_uup = float(anchor_rows["close"].iloc[-1])
+        anchor_dxy = float(cached["dxy_close"].dropna().iloc[-1])
+        fresh = uup.reset_index()
+        for column in ["open", "high", "low", "close"]:
+            fresh[column] = anchor_dxy * fresh[column] / anchor_uup
+        source = "AkShare/Sina UUP return proxy extension for DXY"
+    else:
+        return pd.DataFrame(), ""
+
+    fresh["date"] = pd.to_datetime(fresh["date"], errors="coerce")
+    fresh = fresh.dropna(subset=["date"]).set_index("date").sort_index()
+    keep = [column for column in ["open", "close", "high", "low", "volume", "amount"] if column in fresh]
+    fresh = fresh[keep].rename(columns={column: f"{name}_{column}" for column in keep})
+    return fresh, source
 
 
 def apply_cpi_release_lag(frame: pd.DataFrame) -> pd.DataFrame:
@@ -660,6 +782,7 @@ def fetch_fomc_decision_dates() -> pd.DataFrame:
 def load_market_data() -> tuple[pd.DataFrame, dict[str, str]]:
     sources: dict[str, str] = {}
     series: list[pd.DataFrame] = []
+    source_metadata = load_market_source_metadata()
 
     instruments = {
         "gold": ("101.QO00Y", "COMEX mini gold continuous proxy"),
@@ -677,20 +800,40 @@ def load_market_data() -> tuple[pd.DataFrame, dict[str, str]]:
             frame.to_csv(RAW_DATA / f"{name}_eastmoney.csv")
             series.append(frame)
             sources[name] = f"Eastmoney {secid}: {description}"
+            source_metadata.pop(name, None)
             if repaired_rows:
                 sources[name] += f"; OHLC repaired rows={repaired_rows}"
         except Exception as exc:
             cached = load_cached_eastmoney_kline(name)
             if cached is not None and len(cached):
+                alternative_source = ""
+                if not OFFLINE_MODE:
+                    try:
+                        fresh, alternative_source = fetch_alternative_market_history(name, cached)
+                        cached = append_new_market_rows(cached, fresh)
+                        if alternative_source:
+                            source_metadata[name] = alternative_source
+                    except Exception as alternative_exc:
+                        print(f"[warn] {name} alternative refresh unavailable: {compact_error(str(alternative_exc))}")
                 cached, repaired_rows = repair_ohlc(cached, name)
+                if alternative_source:
+                    cached.to_csv(RAW_DATA / f"{name}_eastmoney.csv")
                 series.append(cached)
                 sources[name] = f"Eastmoney {secid}: {description} (cached fallback after refresh failure)"
+                persisted_alternative = alternative_source or source_metadata.get(name, "")
+                if persisted_alternative:
+                    sources[name] += f"; appended with {persisted_alternative}"
                 if repaired_rows:
                     sources[name] += f"; OHLC repaired rows={repaired_rows}"
                 print(f"[warn] {name} refresh unavailable; using cached Eastmoney data")
             else:
                 sources[name] = f"unavailable: {exc}"
                 print(f"[warn] {name} unavailable: {exc}")
+
+    MARKET_SOURCE_METADATA.write_text(
+        json.dumps(source_metadata, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
     if not any(column.startswith("gold_close") for frame in series for column in frame.columns):
         try:
@@ -952,6 +1095,15 @@ def compute_atr(frame: pd.DataFrame, prefix: str = "gold", window: int = 14) -> 
     return true_range.rolling(window).mean()
 
 
+def risk_position_size(entry_price: float, atr: float, config: RiskConfig) -> float:
+    """Cap portfolio loss at the configured fraction if the initial ATR stop is hit."""
+    if not np.isfinite(entry_price) or entry_price <= 0 or not np.isfinite(atr) or atr <= 0:
+        return 0.0
+    stop_risk_fraction = config.stop_atr_multiple * atr / entry_price
+    risk_limited = config.max_single_loss / stop_risk_fraction if stop_risk_fraction > 0 else 0.0
+    return float(max(0.0, min(config.max_position, config.max_leverage, risk_limited)))
+
+
 def add_trend_quality_features(frame: pd.DataFrame) -> pd.DataFrame:
     high = frame["gold_high"]
     low = frame["gold_low"]
@@ -1000,26 +1152,36 @@ def build_features(data: pd.DataFrame, config: RiskConfig) -> pd.DataFrame:
     frame = data.copy()
     close = frame["gold_close"]
     frame["ret_1"] = close.pct_change()
-    for window in [3, 5, 10, 20, 30, 60, 120, 180]:
+    for window in [3, 5, 10, 20, 30, 60, 120, 180, 252]:
         frame[f"ret_{window}"] = close.pct_change(window)
         frame[f"mom_{window}"] = close / close.shift(window) - 1
         frame[f"sma_{window}"] = close.rolling(window).mean()
         frame[f"sma_gap_{window}"] = close / frame[f"sma_{window}"] - 1
-    for window in [10, 20, 30, 60]:
+    for window in [10, 20, 30, 60, 120]:
         frame[f"vol_{window}"] = frame["ret_1"].rolling(window).std() * math.sqrt(252)
 
     frame["atr"] = compute_atr(frame, window=config.atr_window)
     frame["atr_pct"] = frame["atr"] / close
     frame["drawdown_120"] = close / close.rolling(120).max() - 1
+    frame["drawdown_252"] = close / close.rolling(252).max() - 1
     frame["range_pct"] = (frame["gold_high"] - frame["gold_low"]) / close
     frame["ma_cross_5_20"] = frame["sma_5"] / frame["sma_20"] - 1
     frame["ma_cross_20_60"] = frame["sma_20"] / frame["sma_60"] - 1
     frame["ma_cross_60_120"] = frame["sma_60"] / frame["sma_120"] - 1
     frame["vol_ratio_20_60"] = frame["vol_20"] / frame["vol_60"].replace(0, np.nan)
     frame["ret_vol_adj_20"] = frame["ret_20"] / frame["vol_20"].replace(0, np.nan)
+    frame["ret_vol_adj_120"] = frame["ret_120"] / frame["vol_120"].replace(0, np.nan)
     frame["high_breakout_120"] = close / close.rolling(120).max() - 1
     frame["low_breakdown_120"] = close / close.rolling(120).min() - 1
     frame["trend_strength"] = (frame["sma_gap_20"] + frame["ma_cross_20_60"] + frame["ma_cross_60_120"]) / 3
+    technical_trend = (
+        (close > frame["sma_120"])
+        | ((frame["sma_20"] > frame["sma_60"]) & (frame["sma_60"] > frame["sma_120"]))
+    ).fillna(False)
+    trend_groups = (~technical_trend).cumsum()
+    frame["trend_age_120"] = technical_trend.astype(int).groupby(trend_groups).cumsum().clip(0, 252) / 252
+    frame["momentum_accel_20_60"] = frame["ret_20"] - frame["ret_60"] / 3
+    frame["momentum_accel_60_120"] = frame["ret_60"] - frame["ret_120"] / 2
     frame["oc_ret"] = close / frame["gold_open"].replace(0, np.nan) - 1
     frame["gap_ret"] = frame["gold_open"] / close.shift(1).replace(0, np.nan) - 1
     frame["close_location_20"] = (
@@ -1074,6 +1236,7 @@ def build_features(data: pd.DataFrame, config: RiskConfig) -> pd.DataFrame:
         frame["spx_realized_vol_20"] = frame["spx_close"].pct_change().rolling(20).std() * math.sqrt(252)
     if "dxy_close" in frame:
         frame["gold_dxy_ratio_z60"] = rolling_zscore(close / frame["dxy_close"].replace(0, np.nan), 60)
+        frame["gold_dxy_ratio_z252"] = rolling_zscore(close / frame["dxy_close"].replace(0, np.nan), 252)
     if "spx_close" in frame:
         frame["gold_spx_ratio_z60"] = rolling_zscore(close / frame["spx_close"].replace(0, np.nan), 60)
     if "vix_close" in frame and "vol_20" in frame:
@@ -1158,6 +1321,8 @@ def build_features(data: pd.DataFrame, config: RiskConfig) -> pd.DataFrame:
         frame[f"win_rate_{window}"] = (frame["ret_1"] > 0).rolling(window).mean()
     frame["range_pct_z20"] = rolling_zscore(frame["range_pct"], 20)
     frame["atr_pct_z60"] = rolling_zscore(frame["atr_pct"], 60)
+    frame["range_expansion_20_60"] = frame["range_pct"].rolling(20).mean() / frame["range_pct"].rolling(60).mean().replace(0, np.nan)
+    frame["downside_upside_ratio_20"] = frame["downside_vol_20"] / frame["upside_vol_20"].replace(0, np.nan)
 
     frame = add_trend_quality_features(frame)
 
@@ -1181,6 +1346,8 @@ def feature_columns(frame: pd.DataFrame) -> list[str]:
         "high_breakout_",
         "low_breakdown_",
         "trend_strength",
+        "trend_age_",
+        "momentum_accel_",
         "oc_ret",
         "gap_ret",
         "close_location_",
@@ -1198,6 +1365,8 @@ def feature_columns(frame: pd.DataFrame) -> list[str]:
         "gold_spx_ratio_",
         "vix_gold_vol_spread_",
         "atr_pct_z",
+        "range_expansion_",
+        "downside_upside_ratio_",
         "adx_",
         "rsi_",
         "donchian_",
@@ -1250,7 +1419,7 @@ def meta_feature_columns(frame: pd.DataFrame, policy: str = "stable_no_macro") -
     cols = [column for column in feature_columns(frame) if column != "hmm_raw_state"]
     if policy == "all":
         return cols
-    if policy != "stable_no_macro":
+    if policy not in {"stable_no_macro", "compact_stable", "event_core", "event_macro", "regime_core"}:
         raise ValueError(f"unknown XGBoost feature policy: {policy}")
 
     unstable_macro_prefixes = (
@@ -1265,7 +1434,150 @@ def meta_feature_columns(frame: pd.DataFrame, policy: str = "stable_no_macro") -
         "tips_",
         "fomc_",
     )
-    return [column for column in cols if not column.startswith(unstable_macro_prefixes)]
+    stable = [column for column in cols if not column.startswith(unstable_macro_prefixes)]
+    if policy == "stable_no_macro":
+        return stable
+
+    if policy in {"event_core", "event_macro"}:
+        event_candidates = [
+            "ret_5",
+            "ret_20",
+            "ret_60",
+            "ret_120",
+            "momentum_accel_20_60",
+            "momentum_accel_60_120",
+            "sma_gap_20",
+            "sma_gap_60",
+            "ma_cross_20_60",
+            "trend_age_120",
+            "high_breakout_120",
+            "drawdown_120",
+            "vol_20",
+            "vol_ratio_20_60",
+            "atr_pct_z60",
+            "range_expansion_20_60",
+            "downside_upside_ratio_20",
+            "adx_14",
+            "rsi_14",
+            "ret_skew_20",
+            "ret_autocorr_20",
+            "dxy_ret_20",
+            "dxy_ret_1_z20",
+            "vix_ret_20",
+            "spx_ret_20",
+            "gold_dxy_ratio_z60",
+            "gld_flow_proxy_z60",
+            "hmm_prob_s1",
+            "hmm_prob_s2",
+            "hmm_prob_s3",
+            "hmm_prob_s4",
+        ]
+        if policy == "event_macro":
+            event_candidates.extend(
+                [
+                    "cot_gold_net_z52w",
+                    "cot_gold_net_chg_4w",
+                    "cftc_mm_gold_net_pct_oi_z52w",
+                    "cftc_mm_gold_net_pct_oi_chg_4w",
+                    "gpr_index_z60",
+                    "gpr_threats_z60",
+                    "cpi_mom_surprise_z252",
+                    "core_cpi_mom_surprise_z252",
+                    "nfp_surprise_z252",
+                    "fomc_days_to_next",
+                    "fomc_days_since_last",
+                ]
+            )
+            return [column for column in event_candidates if column in cols]
+        return [column for column in event_candidates if column in stable]
+
+    if policy == "regime_core":
+        regime_candidates = [
+            "ret_20",
+            "ret_60",
+            "ret_120",
+            "ret_252",
+            "momentum_accel_20_60",
+            "momentum_accel_60_120",
+            "sma_gap_20",
+            "sma_gap_60",
+            "sma_gap_120",
+            "sma_gap_252",
+            "ma_cross_20_60",
+            "ma_cross_60_120",
+            "trend_age_120",
+            "drawdown_120",
+            "drawdown_252",
+            "vol_20",
+            "vol_60",
+            "vol_120",
+            "vol_ratio_20_60",
+            "ret_vol_adj_120",
+            "atr_pct_z60",
+            "bb_width_20",
+            "adx_14",
+            "ret_skew_20",
+            "dxy_ret_20",
+            "vix_ret_20",
+            "spx_ret_20",
+            "gold_dxy_ratio_z60",
+            "gold_dxy_ratio_z252",
+            "gld_flow_proxy_z60",
+            "hmm_prob_s1",
+            "hmm_prob_s2",
+            "hmm_prob_s3",
+            "hmm_prob_s4",
+        ]
+        return [column for column in regime_candidates if column in stable]
+
+    # Keep one or two representatives from each economic feature family.  The
+    # event sample is small and highly overlapping, so feeding every technical
+    # transformation to a tree model makes fold-to-fold feature selection
+    # unstable even when the individual trees are shallow.
+    compact_candidates = [
+        "ret_1",
+        "ret_5",
+        "ret_20",
+        "ret_60",
+        "ret_120",
+        "sma_gap_20",
+        "sma_gap_60",
+        "ma_cross_20_60",
+        "ma_cross_60_120",
+        "vol_20",
+        "vol_ratio_20_60",
+        "atr_pct",
+        "atr_pct_z60",
+        "drawdown_120",
+        "range_pct_z20",
+        "close_location_20",
+        "macd_hist_norm",
+        "bb_percent_b_20",
+        "bb_width_20",
+        "adx_14",
+        "rsi_14",
+        "tsmom_score",
+        "trend_quality_score",
+        "ret_skew_20",
+        "ret_autocorr_20",
+        "downside_vol_20",
+        "dxy_ret_1",
+        "dxy_ret_20",
+        "dxy_ret_1_z20",
+        "vix_ret_1",
+        "vix_ret_20",
+        "spx_ret_1",
+        "spx_ret_20",
+        "gold_dxy_ratio_z60",
+        "gold_spx_ratio_z60",
+        "vix_gold_vol_spread_z60",
+        "gld_flow_proxy_z60",
+        "hmm_prob_s1",
+        "hmm_prob_s2",
+        "hmm_prob_s3",
+        "hmm_prob_s4",
+    ]
+    return [column for column in compact_candidates if column in stable]
 
 
 def hmm_feature_columns(frame: pd.DataFrame) -> list[str]:
@@ -1407,6 +1719,31 @@ def fit_hmm(frame: pd.DataFrame, train_mask: pd.Series) -> tuple[Pipeline, dict[
     return pipe, mapping, state_frame
 
 
+def fit_hmm_walk_forward(
+    frame: pd.DataFrame,
+    initial_train_end: pd.Timestamp,
+    retrain_every_days: int,
+) -> tuple[Pipeline, dict[int, str], pd.DataFrame]:
+    """Generate HMM states using only information available before each prediction block."""
+    initial_mask = pd.Series(frame.index <= initial_train_end, index=frame.index)
+    latest_pipe, latest_mapping, initial_states = fit_hmm(frame, initial_mask)
+    state_columns = list(initial_states.columns)
+    result = initial_states.copy()
+    result.loc[frame.index > initial_train_end, state_columns] = np.nan
+    start_pos = frame.index.get_indexer([initial_train_end], method="nearest")[0] + 1
+
+    for pred_start in range(start_pos, len(frame.index), retrain_every_days):
+        pred_end = min(pred_start + retrain_every_days, len(frame.index))
+        cutoff = frame.index[pred_start - 1]
+        expanding_mask = pd.Series(frame.index <= cutoff, index=frame.index)
+        latest_pipe, latest_mapping, candidate_states = fit_hmm(frame, expanding_mask)
+        block_index = frame.index[pred_start:pred_end]
+        result.loc[block_index, state_columns] = candidate_states.loc[block_index, state_columns]
+
+    result["hmm_raw_state"] = pd.to_numeric(result["hmm_raw_state"], errors="coerce").astype("Int64")
+    return latest_pipe, latest_mapping, result
+
+
 def primary_long_signal(frame: pd.DataFrame, mode: str = "trend_slow") -> pd.Series:
     if mode == "trend_slow":
         return (
@@ -1479,16 +1816,20 @@ def triple_barrier_labels(
     atr = frame["atr"]
     for date in event_dates:
         loc = frame.index.get_loc(date)
-        if loc + config.prediction_horizon_days >= len(frame) or not np.isfinite(atr.loc[date]):
+        entry_loc = loc + 1
+        end_loc = entry_loc + config.prediction_horizon_days - 1
+        if end_loc >= len(frame) or not np.isfinite(atr.loc[date]):
             continue
-        entry = close.loc[date]
+        entry_date = frame.index[entry_loc]
+        entry_open = frame["gold_open"].iloc[entry_loc] if "gold_open" in frame else np.nan
+        entry = float(entry_open) if np.isfinite(entry_open) and entry_open > 0 else float(close.iloc[entry_loc])
         upper = entry + config.profit_atr_multiple * atr.loc[date]
         lower = entry - config.stop_atr_multiple * atr.loc[date]
-        end_loc = loc + config.prediction_horizon_days
         label = 0.0
         exit_date = frame.index[end_loc]
         exit_reason = "vertical"
-        for future_loc in range(loc + 1, end_loc + 1):
+        exit_price = float(close.iloc[end_loc])
+        for future_loc in range(entry_loc, end_loc + 1):
             future_date = frame.index[future_loc]
             hit_upper = high.iloc[future_loc] >= upper
             hit_lower = low.iloc[future_loc] <= lower
@@ -1496,28 +1837,42 @@ def triple_barrier_labels(
                 label = 0.0
                 exit_date = future_date
                 exit_reason = "both_stop_first"
+                exit_price = lower
                 break
             if hit_upper:
                 label = 1.0
                 exit_date = future_date
                 exit_reason = "profit"
+                exit_price = upper
                 break
             if hit_lower:
                 label = 0.0
                 exit_date = future_date
                 exit_reason = "stop"
+                exit_price = lower
                 break
         rows.append(
             {
                 "date": date,
+                "tb_entry_date": entry_date,
+                "tb_entry_price": entry,
                 "tb_label": label,
                 "tb_exit_date": exit_date,
                 "tb_exit_reason": exit_reason,
-                "tb_forward_return": close.loc[exit_date] / entry - 1,
+                "tb_forward_return": exit_price / entry - 1,
             }
         )
     if not rows:
-        return pd.DataFrame(columns=["tb_label", "tb_exit_date", "tb_exit_reason", "tb_forward_return"])
+        return pd.DataFrame(
+            columns=[
+                "tb_entry_date",
+                "tb_entry_price",
+                "tb_label",
+                "tb_exit_date",
+                "tb_exit_reason",
+                "tb_forward_return",
+            ]
+        )
     return pd.DataFrame(rows).set_index("date").sort_index()
 
 
@@ -1637,12 +1992,9 @@ def train_triple_barrier_meta_model(
         if validation_base_rate > 0:
             validation_buy_precision_lift = validation_buy_precision / validation_base_rate
         xgboost_statistical_valid = raw_validation_auc >= config.xgboost_min_validation_auc
-        xgboost_enabled = (
-            xgboost_statistical_valid
-            and validation_buy_signals >= config.xgboost_min_validation_buy_signals
-            and validation_buy_precision >= config.xgboost_min_validation_precision
-            and validation_buy_recall >= config.xgboost_min_validation_recall
-        )
+        # Threshold selection is performed later on the validation strategy,
+        # after probabilities from all walk-forward folds are available.
+        xgboost_enabled = xgboost_statistical_valid
     raw_probabilities = probabilities.copy()
     raw_probabilities.name = "p_profit_first"
 
@@ -1658,7 +2010,7 @@ def train_triple_barrier_meta_model(
         "feature_policy": config.xgboost_feature_policy,
         "feature_count": int(len(cols)),
         "scale_pos_weight_cap": config.xgboost_scale_pos_weight_cap,
-        "model_variant": "regularized_stump_weighted",
+        "model_variant": f"regularized_stump_unweighted_{config.xgboost_feature_policy}",
         "xgboost_statistical_valid": bool(xgboost_statistical_valid),
         "xgboost_model_gate_pass": bool(xgboost_enabled),
         "xgboost_strategy_gate_pass": False,
@@ -1669,6 +2021,11 @@ def train_triple_barrier_meta_model(
         "validation_buy_precision": validation_buy_precision,
         "validation_buy_precision_lift": validation_buy_precision_lift,
         "validation_buy_recall": validation_buy_recall,
+        "validation_average_precision": (
+            float(average_precision_score(y_validation, p_validation))
+            if len(validation_events) > 20 and validation_events["tb_label"].nunique() == 2
+            else float("nan")
+        ),
         "xgboost_min_validation_buy_signals": config.xgboost_min_validation_buy_signals,
         "xgboost_min_validation_precision": config.xgboost_min_validation_precision,
         "xgboost_min_validation_recall": config.xgboost_min_validation_recall,
@@ -1770,29 +2127,33 @@ def build_model_validation_report(
     validation_end: pd.Timestamp,
     test_mask: pd.Series,
     config: RiskConfig,
+    entry_threshold: float | None = None,
 ) -> list[dict[str, Any]]:
     event_frame = frame.join(labels, how="left")
     event_frame["p_profit_first"] = probabilities
     event_frame = event_frame[event_frame["tb_label"].notna() & event_frame["p_profit_first"].notna()].copy()
     rows: list[dict[str, Any]] = []
+    report_config = config
+    if entry_threshold is not None:
+        report_config = replace(config, up_threshold=float(entry_threshold))
     rows.append(
         event_validation_metrics(
             event_frame[(event_frame.index > train_end) & (event_frame.index <= validation_end)],
             "sample",
             "validation",
-            config,
+            report_config,
         )
     )
     test_mask_series = pd.Series(test_mask, index=frame.index).reindex(event_frame.index).fillna(False).astype(bool)
     test_events = event_frame[test_mask_series]
-    rows.append(event_validation_metrics(test_events, "sample", "test", config))
+    rows.append(event_validation_metrics(test_events, "sample", "test", report_config))
 
     for year, subset in test_events.groupby(test_events.index.year):
-        rows.append(event_validation_metrics(subset, "test_year", str(year), config))
+        rows.append(event_validation_metrics(subset, "test_year", str(year), report_config))
 
     if "market_state" in test_events:
         for state, subset in test_events.groupby("market_state"):
-            rows.append(event_validation_metrics(subset, "test_hmm_state", str(state), config))
+            rows.append(event_validation_metrics(subset, "test_hmm_state", str(state), report_config))
 
     report = pd.DataFrame(rows)
     report.to_csv(LOCAL_LOGS / "gold_model_validation.csv", index=False, encoding="utf-8-sig")
@@ -1807,11 +2168,14 @@ def generate_signals(
     use_xgboost: bool = True,
     use_atr: bool = True,
     primary_mode: str | None = None,
+    entry_threshold: float | None = None,
+    start_at: pd.Timestamp | None = None,
 ) -> pd.DataFrame:
     signal_frame = frame.copy()
     primary_signal = primary_long_signal(signal_frame, primary_mode or config.primary_signal_mode)
     events = make_meta_events(signal_frame, primary_signal, config)
-    accepted_events = events & (probabilities >= config.up_threshold) if use_xgboost else events
+    threshold = config.up_threshold if entry_threshold is None else float(entry_threshold)
+    accepted_events = events & (probabilities >= threshold) if use_xgboost else events
     signal_frame["p_profit_first_event"] = probabilities
     signal_frame["p_profit_first"] = probabilities.ffill()
     signal_frame["p_up_30d"] = signal_frame["p_profit_first"]
@@ -1830,6 +2194,7 @@ def generate_signals(
     exit_reasons = []
     raw_signals = []
     guides = []
+    fill_prices = []
     in_position = False
     current_position = 0.0
     entry = np.nan
@@ -1843,6 +2208,8 @@ def generate_signals(
         raw_signal = "hold"
         guide = "持有/观望"
         exit_reason = ""
+        fill_price = np.nan
+        exited_this_bar = False
         close = row.gold_close
         high = row.gold_high
         low = row.gold_low
@@ -1851,11 +2218,23 @@ def generate_signals(
             (row.gold_close < row.sma_60) and row.market_state in ["熊市", "恐慌"]
         )
 
+        if start_at is not None and row.Index < start_at:
+            positions.append(0.0)
+            stop_prices.append(np.nan)
+            take_profit_prices.append(np.nan)
+            execution_actions.append("持有/观望")
+            exit_reasons.append("")
+            raw_signals.append("flat")
+            guides.append("卖出/空仓")
+            fill_prices.append(np.nan)
+            continue
+
         if in_position:
             hit_profit = use_atr and np.isfinite(take_profit_price) and high >= take_profit_price
             hit_stop = use_atr and np.isfinite(stop_price) and low <= stop_price
             model_exit = (
                 use_xgboost
+                and config.xgboost_use_model_exit
                 and bool(row.tb_event)
                 and np.isfinite(row.p_profit_first_event)
                 and row.p_profit_first_event <= config.down_threshold
@@ -1867,11 +2246,18 @@ def generate_signals(
             hmm_exit_streak = hmm_exit_streak + 1 if hmm_exit_setup else 0
             hmm_exit = hmm_exit_streak >= config.hmm_exit_confirmation_days
             if hit_stop or hit_profit or model_exit or hmm_exit:
+                if hit_stop:
+                    fill_price = min(float(row.gold_open), stop_price) if np.isfinite(row.gold_open) else stop_price
+                elif hit_profit:
+                    fill_price = max(float(row.gold_open), take_profit_price) if np.isfinite(row.gold_open) else take_profit_price
+                else:
+                    fill_price = close
                 in_position = False
                 current_position = 0.0
                 stop_price = np.nan
                 take_profit_price = np.nan
                 hmm_exit_streak = 0
+                exited_this_bar = True
                 action = "卖出"
                 raw_signal = "flat"
                 guide = "卖出/空仓"
@@ -1887,10 +2273,11 @@ def generate_signals(
                 action = "持有"
                 guide = "持有"
 
-        if not in_position and accepted_arr[i] and np.isfinite(atr):
+        if not in_position and not exited_this_bar and accepted_arr[i] and np.isfinite(atr):
             in_position = True
-            current_position = min(config.max_position, config.max_leverage)
+            current_position = risk_position_size(close, atr, config)
             entry = close
+            fill_price = entry
             stop_price = entry - config.stop_atr_multiple * atr
             take_profit_price = entry + config.profit_atr_multiple * atr
             hmm_exit_streak = 0
@@ -1910,6 +2297,7 @@ def generate_signals(
         exit_reasons.append(exit_reason)
         raw_signals.append(raw_signal)
         guides.append(guide)
+        fill_prices.append(fill_price)
 
     signal_frame["position"] = positions
     signal_frame["atr_stop"] = stop_prices
@@ -1918,12 +2306,26 @@ def generate_signals(
     signal_frame["exit_reason"] = exit_reasons
     signal_frame["raw_signal"] = raw_signals
     signal_frame["guide"] = guides
+    signal_frame["fill_price"] = fill_prices
+    signal_frame["entry_threshold"] = threshold if use_xgboost else np.nan
     return signal_frame
 
 
 def backtest(signal_frame: pd.DataFrame, test_mask: pd.Series) -> tuple[pd.DataFrame, dict[str, float]]:
     bt = signal_frame.loc[test_mask].copy()
-    bt["strategy_ret"] = bt["position"].shift(1).fillna(0) * bt["gold_close"].pct_change().fillna(0)
+    previous_position = bt["position"].shift(1).fillna(0)
+    previous_close = bt["gold_close"].shift(1)
+    mark_price = bt["gold_close"].copy()
+    if "fill_price" in bt:
+        barrier_exit = (
+            (previous_position > 0)
+            & (bt["position"] <= 0)
+            & bt["exit_reason"].isin(["atr_stop", "atr_take_profit"])
+            & bt["fill_price"].notna()
+        )
+        mark_price.loc[barrier_exit] = bt.loc[barrier_exit, "fill_price"]
+    held_return = mark_price / previous_close - 1
+    bt["strategy_ret"] = previous_position * held_return.fillna(0)
     bt["benchmark_ret"] = bt["gold_close"].pct_change().fillna(0)
     bt["turnover"] = bt["position"].diff().abs().fillna(bt["position"].abs())
     bt["equity"] = (1 + bt["strategy_ret"]).cumprod()
@@ -1935,14 +2337,18 @@ def backtest(signal_frame: pd.DataFrame, test_mask: pd.Series) -> tuple[pd.DataF
     benchmark_return = bt["benchmark_equity"].iloc[-1] - 1
     annual_return = (bt["equity"].iloc[-1]) ** (252 / days) - 1
     annual_vol = bt["strategy_ret"].std() * math.sqrt(252)
-    sharpe = annual_return / annual_vol if annual_vol and np.isfinite(annual_vol) else 0.0
+    sharpe = (
+        bt["strategy_ret"].mean() / bt["strategy_ret"].std() * math.sqrt(252)
+        if bt["strategy_ret"].std() and np.isfinite(bt["strategy_ret"].std())
+        else 0.0
+    )
     max_drawdown = bt["drawdown"].min()
     active_days = float((bt["position"].shift(1).fillna(0) > 0).mean())
     win_days = bt.loc[bt["strategy_ret"] != 0, "strategy_ret"]
     win_rate = float((win_days > 0).mean()) if len(win_days) else 0.0
 
     metrics = {
-        "execution_model": "close_to_close_with_prior_day_position",
+        "execution_model": "close_signal_with_exact_atr_barrier_fill",
         "total_return": float(total_return),
         "benchmark_return": float(benchmark_return),
         "annual_return": float(annual_return),
@@ -1958,10 +2364,11 @@ def backtest(signal_frame: pd.DataFrame, test_mask: pd.Series) -> tuple[pd.DataF
         net_ret = bt["strategy_ret"] - bt["turnover"] * (cost_bps / 10000)
         net_equity = (1 + net_ret).cumprod()
         net_drawdown = net_equity / net_equity.cummax() - 1
-        net_annual_return = net_equity.iloc[-1] ** (252 / days) - 1
         net_annual_vol = net_ret.std() * math.sqrt(252)
         metrics[f"net_total_return_{cost_bps}bps"] = float(net_equity.iloc[-1] - 1)
-        metrics[f"net_sharpe_{cost_bps}bps"] = float(net_annual_return / net_annual_vol) if net_annual_vol else 0.0
+        metrics[f"net_sharpe_{cost_bps}bps"] = (
+            float(net_ret.mean() / net_ret.std() * math.sqrt(252)) if net_ret.std() else 0.0
+        )
         metrics[f"net_max_drawdown_{cost_bps}bps"] = float(net_drawdown.min())
     return bt, metrics
 
@@ -1969,39 +2376,127 @@ def backtest(signal_frame: pd.DataFrame, test_mask: pd.Series) -> tuple[pd.DataF
 def apply_xgboost_strategy_gate(
     frame: pd.DataFrame,
     probabilities: pd.Series,
+    labels: pd.DataFrame,
     config: RiskConfig,
     validation_mask: pd.Series,
     model_metrics: dict[str, Any],
 ) -> dict[str, Any]:
-    fallback_signals = generate_signals(frame, probabilities, config, use_xgboost=False, use_atr=True)
-    xgboost_signals = generate_signals(frame, probabilities, config, use_xgboost=True, use_atr=True)
-    _, fallback_metrics = backtest(fallback_signals, validation_mask)
-    _, xgboost_metrics = backtest(xgboost_signals, validation_mask)
-
-    return_uplift = xgboost_metrics["total_return"] - fallback_metrics["total_return"]
-    sharpe_uplift = xgboost_metrics["sharpe"] - fallback_metrics["sharpe"]
-    strategy_gate_pass = (
-        return_uplift >= config.xgboost_min_validation_strategy_uplift
-        and sharpe_uplift >= 0
+    validation_mask_series = pd.Series(validation_mask, index=frame.index).astype(bool)
+    validation_dates = frame.index[validation_mask_series]
+    validation_start = validation_dates.min()
+    fallback_signals = generate_signals(
+        frame,
+        probabilities,
+        config,
+        use_xgboost=False,
+        use_atr=True,
+        start_at=validation_start,
     )
-    model_gate_pass = bool(model_metrics.get("xgboost_enabled", False))
+    _, fallback_metrics = backtest_next_open(
+        fallback_signals,
+        validation_mask,
+        config,
+        cost_bps=5.0,
+        write_log=False,
+    )
+
+    event_validation = labels.join(probabilities.rename("probability"), how="inner")
+    event_validation = event_validation.loc[
+        validation_mask_series.reindex(event_validation.index).fillna(False)
+        & event_validation["tb_label"].notna()
+        & event_validation["probability"].notna()
+    ]
+    y_validation = event_validation["tb_label"].astype(int)
+    base_rate = float(y_validation.mean()) if len(y_validation) else float("nan")
+    candidates: list[dict[str, Any]] = []
+    for threshold in config.xgboost_entry_thresholds:
+        predicted_buy = event_validation["probability"] >= threshold
+        signal_count = int(predicted_buy.sum())
+        coverage = signal_count / len(event_validation) if len(event_validation) else 0.0
+        precision = float(precision_score(y_validation, predicted_buy, zero_division=0)) if len(y_validation) else 0.0
+        recall = float(recall_score(y_validation, predicted_buy, zero_division=0)) if len(y_validation) else 0.0
+        precision_lift = precision / base_rate if base_rate > 0 else float("nan")
+        xgboost_signals = generate_signals(
+            frame,
+            probabilities,
+            config,
+            use_xgboost=True,
+            use_atr=True,
+            entry_threshold=threshold,
+            start_at=validation_start,
+        )
+        _, xgboost_metrics = backtest_next_open(
+            xgboost_signals,
+            validation_mask,
+            config,
+            cost_bps=5.0,
+            write_log=False,
+        )
+        return_uplift = xgboost_metrics["total_return"] - fallback_metrics["total_return"]
+        sharpe_uplift = xgboost_metrics["sharpe"] - fallback_metrics["sharpe"]
+        trade_quality_pass = (
+            signal_count >= config.xgboost_min_validation_buy_signals
+            and coverage >= config.xgboost_min_validation_coverage
+            and precision >= config.xgboost_min_validation_precision
+            and recall >= config.xgboost_min_validation_recall
+            and np.isfinite(precision_lift)
+            and precision_lift >= config.xgboost_min_precision_lift
+        )
+        candidates.append(
+            {
+                "threshold": float(threshold),
+                "signals": signal_count,
+                "coverage": float(coverage),
+                "precision": precision,
+                "recall": recall,
+                "precision_lift": precision_lift,
+                "net_total_return_5bps": float(xgboost_metrics["total_return"]),
+                "net_sharpe_5bps": float(xgboost_metrics["sharpe"]),
+                "return_uplift": float(return_uplift),
+                "sharpe_uplift": float(sharpe_uplift),
+                "trade_quality_pass": bool(trade_quality_pass),
+            }
+        )
+
+    eligible = [
+        candidate
+        for candidate in candidates
+        if candidate["trade_quality_pass"]
+        and candidate["return_uplift"] >= config.xgboost_min_validation_strategy_uplift
+        and candidate["sharpe_uplift"] >= 0
+    ]
+    quality_candidates = [candidate for candidate in candidates if candidate["trade_quality_pass"]]
+    ranked = eligible or quality_candidates or candidates
+    selected = max(ranked, key=lambda item: (item["net_sharpe_5bps"], item["net_total_return_5bps"]))
+    strategy_gate_pass = bool(selected in eligible)
+    model_gate_pass = bool(model_metrics.get("xgboost_statistical_valid", False) and selected["trade_quality_pass"])
     model_metrics.update(
         {
             "xgboost_model_gate_pass": model_gate_pass,
             "xgboost_strategy_gate_pass": bool(strategy_gate_pass),
+            "selected_entry_threshold": selected["threshold"],
+            "selected_validation_signals": selected["signals"],
+            "selected_validation_coverage": selected["coverage"],
+            "selected_validation_precision": selected["precision"],
+            "selected_validation_recall": selected["recall"],
+            "selected_validation_precision_lift": selected["precision_lift"],
+            "threshold_validation": candidates,
             "xgboost_min_validation_strategy_uplift": config.xgboost_min_validation_strategy_uplift,
             "validation_fallback_total_return": float(fallback_metrics["total_return"]),
-            "validation_xgboost_hard_total_return": float(xgboost_metrics["total_return"]),
-            "validation_xgboost_hard_return_uplift": float(return_uplift),
+            "validation_xgboost_hard_total_return": selected["net_total_return_5bps"],
+            "validation_xgboost_hard_return_uplift": selected["return_uplift"],
             "validation_fallback_sharpe": float(fallback_metrics["sharpe"]),
-            "validation_xgboost_hard_sharpe": float(xgboost_metrics["sharpe"]),
-            "validation_xgboost_hard_sharpe_uplift": float(sharpe_uplift),
+            "validation_xgboost_hard_sharpe": selected["net_sharpe_5bps"],
+            "validation_xgboost_hard_sharpe_uplift": selected["sharpe_uplift"],
         }
     )
-    if model_gate_pass and not strategy_gate_pass:
+    if not model_gate_pass:
+        model_metrics["xgboost_enabled"] = False
+        model_metrics["xgboost_gate_reason"] = "validation_trade_quality_below_threshold"
+    elif not strategy_gate_pass:
         model_metrics["xgboost_enabled"] = False
         model_metrics["xgboost_gate_reason"] = "model_gate_pass_strategy_uplift_below_threshold"
-    elif model_gate_pass and strategy_gate_pass:
+    else:
         model_metrics["xgboost_enabled"] = True
         model_metrics["xgboost_gate_reason"] = "model_and_strategy_gate_pass"
     return model_metrics
@@ -2011,57 +2506,131 @@ def backtest_next_open(
     signal_frame: pd.DataFrame,
     test_mask: pd.Series,
     config: RiskConfig,
+    *,
+    cost_bps: float | None = None,
+    write_log: bool = True,
 ) -> tuple[pd.DataFrame, dict[str, float]]:
     bt = signal_frame.loc[test_mask].copy()
     if "gold_open" not in bt or bt["gold_open"].isna().all():
         return backtest(signal_frame, test_mask)
 
     bt["benchmark_ret"] = bt["gold_close"].pct_change().fillna(0)
-    desired = bt["position"].fillna(0).astype(float)
     equity = 1.0
     peak = 1.0
-    carried_position = 0.0
+    position = 0.0
+    stop_price = np.nan
+    take_profit_price = np.nan
+    pending_entry_atr = np.nan
+    pending_entry = False
+    pending_exit = False
+    hmm_exit_streak = 0
     rows: list[dict[str, Any]] = []
     previous_close = np.nan
+    trading_cost_bps = config.realistic_cost_bps if cost_bps is None else float(cost_bps)
 
     for i, (date, row) in enumerate(bt.iterrows()):
         open_price = float(row["gold_open"])
         close_price = float(row["gold_close"])
         if not np.isfinite(open_price) or open_price <= 0:
             open_price = close_price
+        equity_before = equity
+        carried_position = position
+        turnover = 0.0
+        exit_reason = ""
 
-        signal_target = float(desired.shift(1).loc[date]) if i > 0 else 0.0
+        if carried_position > 0 and i > 0 and np.isfinite(previous_close) and previous_close > 0:
+            equity *= 1 + carried_position * (open_price / previous_close - 1)
+
+        if pending_exit and position > 0:
+            turnover += position
+            equity *= 1 - position * (trading_cost_bps / 10000)
+            position = 0.0
+            stop_price = np.nan
+            take_profit_price = np.nan
+            exit_reason = "next_open_trend_exit"
+
+        if position > 0 and not pending_exit:
+            gap_stop = np.isfinite(stop_price) and open_price <= stop_price
+            gap_profit = np.isfinite(take_profit_price) and open_price >= take_profit_price
+            if gap_stop or gap_profit:
+                turnover += position
+                equity *= 1 - position * (trading_cost_bps / 10000)
+                position = 0.0
+                stop_price = np.nan
+                take_profit_price = np.nan
+                hmm_exit_streak = 0
+                exit_reason = "atr_stop_gap" if gap_stop else "atr_take_profit_gap"
+
         drawdown_before = equity / peak - 1
         drawdown_scale = 1.0
         if drawdown_before <= -config.max_drawdown_hard:
             drawdown_scale = config.live_hard_drawdown_position
         elif drawdown_before <= -config.max_drawdown_soft:
             drawdown_scale = config.live_soft_drawdown_position
-        execution_target = min(config.max_position, config.max_leverage, signal_target * drawdown_scale)
-        turnover = abs(execution_target - carried_position)
+        if pending_entry and position <= 0 and drawdown_scale > 0:
+            position = risk_position_size(open_price, pending_entry_atr, config) * drawdown_scale
+            turnover += position
+            equity *= 1 - position * (trading_cost_bps / 10000)
+            if np.isfinite(pending_entry_atr):
+                stop_price = open_price - config.stop_atr_multiple * pending_entry_atr
+                take_profit_price = open_price + config.profit_atr_multiple * pending_entry_atr
 
-        overnight_ret = 0.0 if i == 0 or not np.isfinite(previous_close) else open_price / previous_close - 1
-        intraday_ret = close_price / open_price - 1
-        strategy_ret = carried_position * overnight_ret + execution_target * intraday_ret
-        strategy_ret -= turnover * (config.realistic_cost_bps / 10000)
+        if position > 0:
+            hit_stop = np.isfinite(stop_price) and float(row["gold_low"]) <= stop_price
+            hit_profit = np.isfinite(take_profit_price) and float(row["gold_high"]) >= take_profit_price
+            if hit_stop:
+                end_price = stop_price
+                exit_reason = "atr_stop"
+            elif hit_profit:
+                end_price = take_profit_price
+                exit_reason = "atr_take_profit"
+            else:
+                end_price = close_price
+            equity *= 1 + position * (end_price / open_price - 1)
+            if hit_stop or hit_profit:
+                turnover += position
+                equity *= 1 - position * (trading_cost_bps / 10000)
+                position = 0.0
+                stop_price = np.nan
+                take_profit_price = np.nan
+                hmm_exit_streak = 0
 
-        equity *= 1 + strategy_ret
+        strategy_ret = equity / equity_before - 1
         peak = max(peak, equity)
+        pending_entry = False
+        pending_exit = False
+
+        if position > 0:
+            hmm_exit_setup = row["market_state"] in ["熊市", "恐慌"] and close_price < float(row["sma_60"])
+            hmm_exit_streak = hmm_exit_streak + 1 if hmm_exit_setup else 0
+            model_exit = (
+                config.xgboost_use_model_exit
+                and bool(row.get("tb_event", False))
+                and np.isfinite(row.get("p_profit_first_event", np.nan))
+                and float(row["p_profit_first_event"]) <= config.down_threshold
+            )
+            pending_exit = bool(model_exit or hmm_exit_streak >= config.hmm_exit_confirmation_days)
+        elif bool(row.get("tb_accepted_event", False)) and np.isfinite(row.get("atr", np.nan)):
+            pending_entry = True
+            pending_entry_atr = float(row["atr"])
+
         rows.append(
             {
                 "date": date,
                 "strategy_ret": strategy_ret,
                 "benchmark_ret": row["benchmark_ret"],
-                "position": execution_target,
-                "desired_position": signal_target,
+                "position": position,
+                "desired_position": 1.0 if pending_entry else (0.0 if pending_exit else position),
                 "turnover": turnover,
                 "equity": equity,
                 "benchmark_equity": np.nan,
                 "drawdown": equity / peak - 1,
                 "drawdown_scale": drawdown_scale,
+                "exit_reason": exit_reason,
+                "stop_price": stop_price,
+                "take_profit_price": take_profit_price,
             }
         )
-        carried_position = execution_target
         previous_close = close_price
 
     live = pd.DataFrame(rows).set_index("date")
@@ -2071,25 +2640,51 @@ def backtest_next_open(
     benchmark_return = live["benchmark_equity"].iloc[-1] - 1
     annual_return = live["equity"].iloc[-1] ** (252 / days) - 1
     annual_vol = live["strategy_ret"].std() * math.sqrt(252)
-    sharpe = annual_return / annual_vol if annual_vol and np.isfinite(annual_vol) else 0.0
+    sharpe = (
+        live["strategy_ret"].mean() / live["strategy_ret"].std() * math.sqrt(252)
+        if live["strategy_ret"].std() and np.isfinite(live["strategy_ret"].std())
+        else 0.0
+    )
     active_days = float((live["position"] > 0).mean())
     win_days = live.loc[live["strategy_ret"] != 0, "strategy_ret"]
+    downside = live["strategy_ret"].clip(upper=0)
+    downside_vol = downside.std() * math.sqrt(252)
+    sortino = (
+        live["strategy_ret"].mean() * 252 / downside_vol
+        if downside_vol and np.isfinite(downside_vol)
+        else 0.0
+    )
+    max_drawdown = float(live["drawdown"].min())
+    calmar = annual_return / abs(max_drawdown) if max_drawdown < 0 else 0.0
+    benchmark_drawdown = live["benchmark_equity"] / live["benchmark_equity"].cummax() - 1
+    benchmark_vol = live["benchmark_ret"].std() * math.sqrt(252)
+    benchmark_sharpe = (
+        live["benchmark_ret"].mean() / live["benchmark_ret"].std() * math.sqrt(252)
+        if live["benchmark_ret"].std()
+        else 0.0
+    )
     metrics = {
-        "execution_model": "t_close_signal_t_plus_1_open_execution",
-        "cost_bps": config.realistic_cost_bps,
+        "execution_model": "t_close_signal_t_plus_1_open_with_intraday_atr_fills",
+        "cost_bps": trading_cost_bps,
         "total_return": float(total_return),
         "benchmark_return": float(benchmark_return),
         "annual_return": float(annual_return),
         "annual_vol": float(annual_vol),
         "sharpe": float(sharpe),
-        "max_drawdown": float(live["drawdown"].min()),
+        "sortino": float(sortino),
+        "calmar": float(calmar),
+        "max_drawdown": max_drawdown,
+        "benchmark_annual_vol": float(benchmark_vol),
+        "benchmark_sharpe": float(benchmark_sharpe),
+        "benchmark_max_drawdown": float(benchmark_drawdown.min()),
         "active_day_ratio": active_days,
         "daily_win_rate_when_active": float((win_days > 0).mean()) if len(win_days) else 0.0,
         "test_trades": int((live["turnover"] > 0).sum()),
         "turnover": float(live["turnover"].sum()),
         "drawdown_scaled_days": int((live["drawdown_scale"] < 1).sum()),
     }
-    live.to_csv(LOCAL_LOGS / "gold_live_execution.csv", encoding="utf-8-sig")
+    if write_log:
+        live.to_csv(LOCAL_LOGS / "gold_live_execution.csv", encoding="utf-8-sig")
     return live, metrics
 
 
@@ -2127,15 +2722,94 @@ def metric_subset(metrics: dict[str, float]) -> dict[str, float]:
     return {key: metrics[key] for key in keys if key in metrics}
 
 
+def build_yearly_backtest_report(backtest_frame: pd.DataFrame) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for year, subset in backtest_frame.groupby(backtest_frame.index.year):
+        strategy_ret = subset["strategy_ret"].fillna(0)
+        benchmark_ret = subset["benchmark_ret"].fillna(0)
+        equity = (1 + strategy_ret).cumprod()
+        benchmark = (1 + benchmark_ret).cumprod()
+        drawdown = equity / equity.cummax() - 1
+        volatility = strategy_ret.std()
+        rows.append(
+            {
+                "year": int(year),
+                "total_return": float(equity.iloc[-1] - 1),
+                "benchmark_return": float(benchmark.iloc[-1] - 1),
+                "sharpe": float(strategy_ret.mean() / volatility * math.sqrt(252)) if volatility else 0.0,
+                "max_drawdown": float(drawdown.min()),
+                "average_position": float(subset["position"].mean()),
+                "turnover": float(subset["turnover"].sum()),
+            }
+        )
+    pd.DataFrame(rows).to_csv(LOCAL_LOGS / "gold_backtest_yearly.csv", index=False, encoding="utf-8-sig")
+    return rows
+
+
+def run_parameter_stability_report(
+    frame: pd.DataFrame,
+    config: RiskConfig,
+    validation_mask: pd.Series,
+    test_mask: pd.Series,
+) -> list[dict[str, Any]]:
+    """Audit one-factor neighbors without using test results to change the formal configuration."""
+    variants = [
+        ("fallback_reference", config),
+        ("profit_8", replace(config, profit_atr_multiple=8.0)),
+        ("profit_12", replace(config, profit_atr_multiple=12.0)),
+        ("stop_5", replace(config, stop_atr_multiple=5.0)),
+        ("stop_7", replace(config, stop_atr_multiple=7.0)),
+        ("hmm_confirm_15", replace(config, hmm_exit_confirmation_days=15)),
+        ("hmm_confirm_30", replace(config, hmm_exit_confirmation_days=30)),
+        ("event_gap_3", replace(config, meta_event_gap_days=3)),
+        ("event_gap_8", replace(config, meta_event_gap_days=8)),
+    ]
+    rows: list[dict[str, Any]] = []
+    empty_probabilities = pd.Series(np.nan, index=frame.index)
+    for name, variant in variants:
+        row: dict[str, Any] = {"name": name}
+        for segment, mask in [("validation", validation_mask), ("test", test_mask)]:
+            mask_series = pd.Series(mask, index=frame.index).astype(bool)
+            signals = generate_signals(
+                frame,
+                empty_probabilities,
+                variant,
+                use_xgboost=False,
+                use_atr=True,
+                start_at=frame.index[mask_series].min(),
+            )
+            _, metrics = backtest_next_open(
+                signals,
+                mask,
+                variant,
+                cost_bps=5.0,
+                write_log=False,
+            )
+            row.update(
+                {
+                    f"{segment}_return_5bps": metrics["total_return"],
+                    f"{segment}_sharpe_5bps": metrics["sharpe"],
+                    f"{segment}_max_drawdown_5bps": metrics["max_drawdown"],
+                    f"{segment}_trades": metrics["test_trades"],
+                }
+            )
+        rows.append(row)
+    pd.DataFrame(rows).to_csv(LOCAL_LOGS / "gold_parameter_stability.csv", index=False, encoding="utf-8-sig")
+    return rows
+
+
 def run_ablation_experiments(
     frame: pd.DataFrame,
     probabilities: pd.Series,
     config: RiskConfig,
     test_mask: pd.Series,
     formal_signals: pd.DataFrame | None = None,
+    entry_threshold: float | None = None,
 ) -> list[dict[str, Any]]:
     trend_signal = primary_long_signal(frame, "trend_slow")
     hmm_signal = primary_long_signal(frame, config.primary_signal_mode)
+    test_mask_series = pd.Series(test_mask, index=frame.index).astype(bool)
+    test_start = frame.index[test_mask_series].min()
     variants = [
         (
             "A_buy_and_hold_gold",
@@ -2148,34 +2822,34 @@ def run_ablation_experiments(
             make_position_signal_frame(frame, trend_signal.astype(float), "B_technical_trend_filter"),
         ),
         (
-            "C_hmm_quality_filter",
-            "HMM quality 趋势过滤",
-            make_position_signal_frame(frame, hmm_signal.astype(float), "C_hmm_quality_filter"),
+            "C_primary_trend_filter",
+            "正式主趋势过滤（当前为 120 日趋势）",
+            make_position_signal_frame(frame, hmm_signal.astype(float), "C_primary_trend_filter"),
         ),
         (
             "D_trend_cusum",
             "技术趋势 + CUSUM，无 HMM/ATR/XGBoost",
-            generate_signals(frame, probabilities, config, use_xgboost=False, use_atr=False, primary_mode="trend_slow"),
+            generate_signals(frame, probabilities, config, use_xgboost=False, use_atr=False, primary_mode="trend_slow", start_at=test_start),
         ),
         (
-            "E_hmm_cusum",
-            "HMM + CUSUM，无 XGBoost，无 ATR",
-            generate_signals(frame, probabilities, config, use_xgboost=False, use_atr=False),
+            "E_primary_cusum",
+            "正式主趋势 + CUSUM，无 XGBoost/ATR",
+            generate_signals(frame, probabilities, config, use_xgboost=False, use_atr=False, start_at=test_start),
         ),
         (
-            "F_hmm_cusum_atr",
-            "HMM + CUSUM + ATR，无 XGBoost",
-            generate_signals(frame, probabilities, config, use_xgboost=False, use_atr=True),
+            "F_primary_cusum_atr",
+            "正式主趋势 + CUSUM + ATR，无 XGBoost",
+            generate_signals(frame, probabilities, config, use_xgboost=False, use_atr=True, start_at=test_start),
         ),
         (
-            "G_hmm_cusum_xgboost",
-            "HMM + CUSUM + XGBoost，无 ATR",
-            generate_signals(frame, probabilities, config, use_xgboost=True, use_atr=False),
+            "G_primary_cusum_xgboost",
+            "正式主趋势 + CUSUM + XGBoost，无 ATR",
+            generate_signals(frame, probabilities, config, use_xgboost=True, use_atr=False, entry_threshold=entry_threshold, start_at=test_start),
         ),
         (
-            "H_hmm_cusum_xgboost_atr",
-            "HMM + CUSUM + XGBoost + ATR",
-            generate_signals(frame, probabilities, config, use_xgboost=True, use_atr=True),
+            "H_primary_cusum_xgboost_atr",
+            "正式主趋势 + CUSUM + XGBoost + ATR",
+            generate_signals(frame, probabilities, config, use_xgboost=True, use_atr=True, entry_threshold=entry_threshold, start_at=test_start),
         ),
     ]
     if formal_signals is not None:
@@ -2200,6 +2874,8 @@ def build_outputs(
     model_metrics: dict[str, float],
     backtest_metrics: dict[str, float],
     live_execution_metrics: dict[str, float],
+    forward_holdout_metrics: dict[str, Any],
+    yearly_backtest_metrics: list[dict[str, Any]],
     ablation_metrics: list[dict[str, Any]],
     model_validation: list[dict[str, Any]],
     importances: pd.DataFrame,
@@ -2282,12 +2958,15 @@ def build_outputs(
         "atrPct": float(latest["atr_pct"]),
         "thresholds": {
             "buyAbove": config.up_threshold,
+            "selectedCandidate": float(model_metrics.get("selected_entry_threshold", config.up_threshold)),
             "sellBelow": config.down_threshold,
         },
         "risk": asdict(config),
         "modelMetrics": model_metrics,
         "backtestMetrics": backtest_metrics,
         "liveExecutionMetrics": live_execution_metrics,
+        "forwardHoldoutMetrics": forward_holdout_metrics,
+        "backtestYearly": yearly_backtest_metrics,
         "ablation": ablation_metrics,
         "modelValidation": model_validation,
         "topFeatures": top_features,
@@ -2304,19 +2983,22 @@ def build_outputs(
             "MOVE、Fed funds futures implied rate、GLD 官方持仓和黄金 ETF 官方净流入当前没有稳定免费 point-in-time 接口，已在 sources/dataQuality 标为不可用或 proxy。",
             "GPR 使用 Caldara-Iacoviello 月度地缘政治风险指数，并做月末后 7 天滞后近似。",
             "FOMC 事件来自美联储会议日历，作为事件日和 proximity 特征。",
-            "XGBoost 当前预测的是 triple-barrier meta-label：HMM quality + CUSUM 候选交易是否先触发止盈。",
-            "XGBoost 使用 stable_no_macro 特征策略：保留技术、主要市场变量和 HMM 状态，剔除低频宏观、CFTC、GPR、surprise 和实际利率变量，降低非平稳特征对验证段的伤害。",
-            "XGBoost 训练器使用强正则 stump，并加入 MACD、布林带、随机指标、收益分布和短滞后跨市场特征，优先改善高分信号尾部稳定性。",
-            f"正式交易信号仅在验证 AUC >= {config.xgboost_min_validation_auc:.2f} 且买入阈值下 precision/recall 达标时使用 XGBoost；否则回退为 HMM + CUSUM + ATR。",
-            "即使 XGBoost 模型闸门通过，硬过滤策略也必须在验证段相对 HMM/CUSUM/ATR fallback 带来收益和 Sharpe 增益，否则不接管正式交易。",
-            "实盘模拟使用 t 日收盘信号、t+1 日开盘成交、交易成本和回撤降仓约束。",
+            "XGBoost 当前预测的是 triple-barrier meta-label：120 日长期趋势 + CUSUM 候选交易是否先触发止盈。",
+            "XGBoost 使用 34 个 regime_core 长期状态特征和无类别权重的强正则 stump，降低短周期变量主导的趋势踏空和概率尺度漂移。",
+            f"正式交易信号仅在验证 AUC >= {config.xgboost_min_validation_auc:.2f}、至少 {config.xgboost_min_validation_buy_signals} 个阈值信号、候选覆盖率 >= {config.xgboost_min_validation_coverage:.0%} 且 precision lift/recall 达标时使用 XGBoost。",
+            "XGBoost 只作为低分尾部否决器过滤候选入场，不用新候选事件的低分强制退出已有持仓；策略还必须在验证段相对 fallback 带来净收益和 Sharpe 增益。",
+            "训练和验证截止日已经冻结；2026-06-20 之后的新数据作为 forward holdout，不回流到历史参数选择。",
+            f"HMM 使用 expanding walk-forward，并约每 {config.hmm_retrain_every_days} 个交易日重训一次，所有状态概率只使用当时可得数据。",
+            f"入场仓位按 ATR 止损距离缩放，使计划初始止损损失不超过组合净值的 {config.max_single_loss:.0%}；隔夜跳空可能使实际损失超过计划值。",
+            "实盘模拟使用 t 日收盘信号、t+1 日开盘成交、盘中 ATR 障碍、双边交易成本和回撤降仓约束。",
+            "网站主回测采用次日开盘事件驱动口径；盘中障碍按障碍价成交，隔夜跳空穿越障碍按开盘价成交。",
             f"{config.prediction_horizon_days} 日窗口仅用于训练标签和防止标签泄漏，不作为真实持仓的强制退出时间。",
             f"HMM 退出需要熊市/恐慌且跌破 60 日均线连续确认 {config.hmm_exit_confirmation_days} 天。",
             "研究结果不构成投资建议。",
         ],
     }
     (PUBLIC_DATA / "gold_research_latest.json").write_text(
-        json.dumps(latest_json, ensure_ascii=False, indent=2),
+        json.dumps(json_safe(latest_json), ensure_ascii=False, indent=2, allow_nan=False),
         encoding="utf-8",
     )
 
@@ -2376,15 +3058,19 @@ def run_pipeline() -> dict[str, Any]:
 
     usable = features.dropna(subset=["gold_close"]).copy()
     usable = usable.iloc[220:].copy()
-    train_split_at = int(len(usable) * 0.55)
-    validation_split_at = int(len(usable) * 0.72)
-    train_end = usable.index[train_split_at]
-    validation_end = usable.index[validation_split_at]
+    train_end = pd.Timestamp(config.train_end_date)
+    validation_end = pd.Timestamp(config.validation_end_date)
+    if train_end not in usable.index or validation_end not in usable.index:
+        raise RuntimeError("Configured frozen train/validation split dates are not present in the gold dataset")
     train_mask = features.index <= train_end
     validation_mask = (features.index > train_end) & (features.index <= validation_end)
     test_mask = features.index > validation_end
 
-    _, state_mapping, state_frame = fit_hmm(features, train_mask)
+    _, state_mapping, state_frame = fit_hmm_walk_forward(
+        features,
+        train_end,
+        config.hmm_retrain_every_days,
+    )
     features = features.join(state_frame)
     state_dummies = pd.get_dummies(features["market_state_code"], prefix="state", dtype=float)
     features = features.join(state_dummies)
@@ -2403,6 +3089,16 @@ def run_pipeline() -> dict[str, Any]:
         test_mask,
         config,
     )
+    model_metrics = apply_xgboost_strategy_gate(
+        features,
+        probabilities,
+        meta_labels,
+        config,
+        validation_mask,
+        model_metrics,
+    )
+    xgboost_enabled = bool(model_metrics.get("xgboost_enabled", False))
+    entry_threshold = float(model_metrics.get("selected_entry_threshold", config.up_threshold))
     model_validation = build_model_validation_report(
         features,
         meta_labels,
@@ -2411,13 +3107,79 @@ def run_pipeline() -> dict[str, Any]:
         validation_end,
         test_mask,
         config,
+        entry_threshold=entry_threshold,
     )
-    model_metrics = apply_xgboost_strategy_gate(features, probabilities, config, validation_mask, model_metrics)
-    xgboost_enabled = bool(model_metrics.get("xgboost_enabled", False))
-    signals = generate_signals(features, probabilities, config, use_xgboost=xgboost_enabled, use_atr=True)
-    backtest_frame, backtest_metrics = backtest(signals, test_mask)
-    live_execution_frame, live_execution_metrics = backtest_next_open(signals, test_mask, config)
-    ablation_metrics = run_ablation_experiments(features, probabilities, config, test_mask, formal_signals=signals)
+    signals = generate_signals(
+        features,
+        probabilities,
+        config,
+        use_xgboost=xgboost_enabled,
+        use_atr=True,
+        entry_threshold=entry_threshold,
+    )
+    test_start = features.index[test_mask].min()
+    evaluation_signals = generate_signals(
+        features,
+        probabilities,
+        config,
+        use_xgboost=xgboost_enabled,
+        use_atr=True,
+        entry_threshold=entry_threshold,
+        start_at=test_start,
+    )
+    _, close_research_metrics = backtest(evaluation_signals, test_mask)
+    backtest_frame, backtest_metrics = backtest_next_open(
+        evaluation_signals,
+        test_mask,
+        config,
+        cost_bps=0.0,
+        write_log=False,
+    )
+    _, net_5bps_metrics = backtest_next_open(
+        evaluation_signals,
+        test_mask,
+        config,
+        cost_bps=5.0,
+        write_log=False,
+    )
+    live_execution_frame, live_execution_metrics = backtest_next_open(
+        evaluation_signals,
+        test_mask,
+        config,
+        cost_bps=config.realistic_cost_bps,
+        write_log=True,
+    )
+    forward_start = pd.Timestamp(config.forward_holdout_start_date)
+    forward_frame = live_execution_frame.loc[live_execution_frame.index >= forward_start]
+    forward_holdout_metrics = {
+        "start": config.forward_holdout_start_date,
+        "end": str(live_execution_frame.index.max().date()),
+        "days": int(len(forward_frame)),
+        "total_return": float((1 + forward_frame["strategy_ret"].fillna(0)).prod() - 1),
+        "benchmark_return": float((1 + forward_frame["benchmark_ret"].fillna(0)).prod() - 1),
+        "average_position": float(forward_frame["position"].mean()) if len(forward_frame) else 0.0,
+        "trade_days": int((forward_frame["turnover"] > 0).sum()),
+    }
+    backtest_metrics.update(
+        {
+            "net_total_return_5bps": net_5bps_metrics["total_return"],
+            "net_sharpe_5bps": net_5bps_metrics["sharpe"],
+            "net_max_drawdown_5bps": net_5bps_metrics["max_drawdown"],
+            "close_research_total_return": close_research_metrics["total_return"],
+            "close_research_sharpe": close_research_metrics["sharpe"],
+        }
+    )
+    ablation_metrics = run_ablation_experiments(
+        features,
+        probabilities,
+        config,
+        test_mask,
+        formal_signals=evaluation_signals,
+        entry_threshold=entry_threshold,
+    )
+    pd.DataFrame(ablation_metrics).to_csv(LOCAL_LOGS / "gold_ablation.csv", index=False, encoding="utf-8-sig")
+    yearly_backtest_metrics = build_yearly_backtest_report(backtest_frame)
+    parameter_stability = run_parameter_stability_report(features, config, validation_mask, test_mask)
 
     build_outputs(
         signals,
@@ -2425,6 +3187,8 @@ def run_pipeline() -> dict[str, Any]:
         model_metrics,
         backtest_metrics,
         live_execution_metrics,
+        forward_holdout_metrics,
+        yearly_backtest_metrics,
         ablation_metrics,
         model_validation,
         importances,
@@ -2446,6 +3210,9 @@ def run_pipeline() -> dict[str, Any]:
         "model_metrics": model_metrics,
         "backtest_metrics": backtest_metrics,
         "live_execution_metrics": live_execution_metrics,
+        "forward_holdout_metrics": forward_holdout_metrics,
+        "backtest_yearly": yearly_backtest_metrics,
+        "parameter_stability": parameter_stability,
         "ablation": ablation_metrics,
         "model_validation": model_validation,
         "outputs": {
@@ -2453,6 +3220,8 @@ def run_pipeline() -> dict[str, Any]:
             "ablation_csv": str(LOCAL_LOGS / "gold_ablation.csv"),
             "model_validation_csv": str(LOCAL_LOGS / "gold_model_validation.csv"),
             "live_execution_csv": str(LOCAL_LOGS / "gold_live_execution.csv"),
+            "backtest_yearly_csv": str(LOCAL_LOGS / "gold_backtest_yearly.csv"),
+            "parameter_stability_csv": str(LOCAL_LOGS / "gold_parameter_stability.csv"),
             "latest_json": str(PUBLIC_DATA / "gold_research_latest.json"),
             "price_json": str(PUBLIC_DATA / "gold_price_series.json"),
             "backtest_json": str(PUBLIC_DATA / "gold_backtest.json"),
@@ -2461,12 +3230,15 @@ def run_pipeline() -> dict[str, Any]:
 
 
 def main() -> None:
+    global OFFLINE_MODE
     parser = argparse.ArgumentParser(description="Run local gold HMM + XGBoost research pipeline.")
     parser.add_argument("--json", action="store_true", help="Print a JSON summary.")
+    parser.add_argument("--offline", action="store_true", help="Use cached market and macro data without network refresh.")
     args = parser.parse_args()
+    OFFLINE_MODE = bool(args.offline)
     summary = run_pipeline()
     if args.json:
-        print(json.dumps(summary, ensure_ascii=False, indent=2))
+        print(json.dumps(json_safe(summary), ensure_ascii=False, indent=2, allow_nan=False))
     else:
         print(
             f"{summary['as_of']} {summary['market_state_code']}={summary['market_state']} "

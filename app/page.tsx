@@ -231,10 +231,10 @@ function EquityChart() {
     <section className="panel">
       <div className="sectionHead">
         <div>
-          <p className="eyebrow">样本外回测</p>
+          <p className="eyebrow">历史测试 · 严格执行</p>
           <h2>策略净值 vs 买入持有</h2>
         </div>
-        <div className="backtestSummary" aria-label="样本外回测摘要">
+        <div className="backtestSummary" aria-label="历史测试回测摘要">
           <span>{start.date} 至 {end.date}</span>
           <strong className="backtestStrategy" data-series="strategy">
             策略 {pct(latest.backtestMetrics.total_return, 1)}
@@ -268,7 +268,7 @@ function AblationPanel() {
           <h2>扩展消融实验</h2>
         </div>
         <div className="chartScale">
-          <span>用于判断收益来自趋势、HMM、XGBoost 还是 ATR</span>
+          <span>研究收盘口径，仅用于同口径模块归因；正式结果见上方严格执行回测</span>
         </div>
       </div>
       <div className="ablationTable" aria-label="策略消融实验">
@@ -364,9 +364,9 @@ export default function Home() {
   const modelContext = latest.isMetaEvent ? "当前候选交易" : "最近候选交易延续";
   const gateReason = latest.modelMetrics.xgboost_gate_reason;
   const modelGateText = latest.xgboostEnabled
-    ? "XGBoost 已通过模型和策略验证闸门，可参与入场/退出判断。"
+    ? "XGBoost 已通过模型和策略验证闸门，可参与候选入场过滤；退出仍由 ATR 与 HMM 风控决定。"
     : latest.modelMetrics.xgboost_model_gate_pass && gateReason === "model_gate_pass_strategy_uplift_below_threshold"
-      ? "XGBoost 高分信号已通过模型闸门，但验证段硬过滤未带来策略增益，今日操作仍由 HMM/CUSUM/ATR 风控决定。"
+      ? "XGBoost 高分信号已通过模型闸门，但验证段入场过滤未带来策略增益，今日操作仍由 HMM/CUSUM/ATR 风控决定。"
       : latest.modelMetrics.xgboost_statistical_valid
       ? "XGBoost 排序验证已修复，但高阈值交易质量未达闸门，今日操作仍由 HMM/CUSUM/ATR 风控决定。"
       : "XGBoost 排序验证未通过，今日操作由 HMM/CUSUM/ATR 风控决定。";
@@ -410,7 +410,7 @@ export default function Home() {
           <div className="snapshot">
             <MetricCard label="黄金价格" value={num(latest.price, 2)} detail={`${latest.asset} · 日变化 ${pct(oneDay, 2)}`} />
             <MetricCard label="ATR 止损线" value={latest.atrStop ? num(latest.atrStop, 2) : "无"} detail={`止盈 ${latest.risk.profit_atr_multiple.toFixed(0)} ATR · 止损 ${latest.risk.stop_atr_multiple.toFixed(0)} ATR`} />
-            <MetricCard label="样本外 Sharpe" value={num(latest.backtestMetrics.sharpe, 2)} detail={`5bps 净收益 ${pct(latest.backtestMetrics.net_total_return_5bps, 1)}`} />
+            <MetricCard label="历史测试 Sharpe" value={num(latest.backtestMetrics.sharpe, 2)} detail={`5bps 净收益 ${pct(latest.backtestMetrics.net_total_return_5bps, 1)}`} />
             <MetricCard label="Raw AUC" value={num(rawAuc, 2)} detail={`测试期交易动作 ${latest.backtestMetrics.test_trades}`} />
           </div>
         </div>
@@ -430,9 +430,9 @@ export default function Home() {
             </div>
           </div>
           <div className="rules">
-            <p><strong>趋势事件</strong><span>当 HMM quality 趋势成立时，用 CUSUM 波动阈值触发候选交易事件，最小间隔 {latest.risk.meta_event_gap_days} 个交易日。</span></p>
-            <p><strong>Meta P &gt; {pct(latest.thresholds.buyAbove, 0)}</strong><span>XGBoost 判断候选交易质量足够高时，以最高 {pct(latest.risk.max_position, 0)} 仓位入场。</span></p>
-            <p><strong>退出规则</strong><span>买入后不设置强制持仓到期；退出由 {latest.risk.profit_atr_multiple.toFixed(0)} ATR 止盈、{latest.risk.stop_atr_multiple.toFixed(0)} ATR 止损、HMM 熊市/恐慌跌破 60 日均线连续确认 {latest.risk.hmm_exit_confirmation_days} 天，或新 CUSUM 事件下 XGBoost 分数跌破 {pct(latest.thresholds.sellBelow, 0)} 决定。</span></p>
+            <p><strong>趋势事件</strong><span>当 120 日长期趋势成立时，用 CUSUM 波动阈值触发候选交易事件，最小间隔 {latest.risk.meta_event_gap_days} 个交易日；HMM 主要负责状态监控和退出风控。</span></p>
+            <p><strong>{latest.xgboostEnabled ? `Meta P > ${pct(latest.thresholds.buyAbove, 1)}` : "Fallback 入场"}</strong><span>{latest.xgboostEnabled ? "XGBoost 只否决低分尾部候选入场。" : "XGBoost 策略闸门未通过，候选事件由长期趋势 + CUSUM 决定。"} 仓位再按初始 ATR 止损距离缩放，计划单笔损失不超过 {pct(latest.risk.max_single_loss, 0)}。</span></p>
+            <p><strong>退出规则</strong><span>买入后不设置强制持仓到期；退出仅由 {latest.risk.profit_atr_multiple.toFixed(0)} ATR 止盈、{latest.risk.stop_atr_multiple.toFixed(0)} ATR 止损，或 HMM 熊市/恐慌跌破 60 日均线连续确认 {latest.risk.hmm_exit_confirmation_days} 天决定。</span></p>
           </div>
         </section>
 
@@ -445,7 +445,7 @@ export default function Home() {
           </div>
           <div className="riskList">
             <span>最大仓位 {pct(latest.risk.max_position, 0)}</span>
-            <span>最大单笔风险 {pct(latest.risk.max_single_loss, 0)}</span>
+            <span>计划止损风险上限 {pct(latest.risk.max_single_loss, 0)}</span>
             <span>最大杠杆 {latest.risk.max_leverage.toFixed(1)}x</span>
             <span>止盈 {latest.risk.profit_atr_multiple.toFixed(0)} ATR</span>
             <span>止损 {latest.risk.stop_atr_multiple.toFixed(0)} ATR</span>

@@ -223,6 +223,56 @@ def probe() -> list[dict[str, object]]:
                 else (compact(payload[:260]) if not ok and payload else ""),
             }
         )
+    try:
+        import akshare as ak
+
+        alternative_tests = [
+            ("sina_gold_gc", lambda: ak.futures_foreign_hist(symbol="GC"), "close"),
+            ("sina_gld", lambda: ak.stock_us_daily(symbol="GLD", adjust=""), "close"),
+            ("sina_vixy", lambda: ak.stock_us_daily(symbol="VIXY", adjust=""), "close"),
+            ("sina_spx", lambda: ak.index_us_stock_sina(symbol=".INX"), "close"),
+            ("akshare_us10y", lambda: ak.bond_zh_us_rate(start_date="20260615"), "美国国债收益率10年"),
+        ]
+        for name, loader, value_column in alternative_tests:
+            start = time.time()
+            try:
+                frame = loader()
+                values = frame[value_column].dropna()
+                results.append(
+                    {
+                        "name": name,
+                        "ok": bool(len(frame) and len(values)),
+                        "rows": int(len(frame)),
+                        "last": None if values.empty else float(values.iloc[-1]),
+                        "elapsed": round(time.time() - start, 2),
+                        "error": "",
+                        "preview": "",
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001 - probe should continue.
+                results.append(
+                    {
+                        "name": name,
+                        "ok": False,
+                        "rows": 0,
+                        "last": None,
+                        "elapsed": round(time.time() - start, 2),
+                        "error": compact(str(exc)),
+                        "preview": "",
+                    }
+                )
+    except Exception as exc:  # noqa: BLE001 - AkShare is optional for the probe.
+        results.append(
+            {
+                "name": "akshare_alternative_sources",
+                "ok": False,
+                "rows": 0,
+                "last": None,
+                "elapsed": 0.0,
+                "error": compact(str(exc)),
+                "preview": "",
+            }
+        )
     return results
 
 
