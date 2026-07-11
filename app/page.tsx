@@ -365,6 +365,8 @@ export default function Home() {
   const gateReason = latest.modelMetrics.xgboost_gate_reason;
   const modelGateText = latest.xgboostEnabled
     ? "XGBoost 已通过模型和策略验证闸门，可参与候选入场过滤；退出仍由 ATR 与 HMM 风控决定。"
+    : latest.modelMetrics.xgboost_model_gate_pass && gateReason === "model_gate_pass_strategy_trade_evidence_below_threshold"
+      ? `XGBoost 排序和候选质量已通过模型闸门，但冻结验证段只有 ${latest.modelMetrics.selected_validation_executed_trades} 次真实交易动作，证据不足；正式策略自动回退到长期趋势、CUSUM 与 ATR/HMM 风控。`
     : latest.modelMetrics.xgboost_model_gate_pass && gateReason === "model_gate_pass_strategy_uplift_below_threshold"
       ? "XGBoost 高分信号已通过模型闸门，但验证段入场过滤未带来策略增益，今日操作仍由 HMM/CUSUM/ATR 风控决定。"
       : latest.modelMetrics.xgboost_statistical_valid

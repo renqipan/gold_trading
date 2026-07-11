@@ -68,10 +68,7 @@ class RiskConfig:
     max_drawdown_soft: float = 0.18
     max_drawdown_hard: float = 0.30
     atr_window: int = 14
-    atr_multiple: float = 4.0
-    kelly_fraction: float = 1.0
     retrain_every_days: int = 21
-    label_purge_days: int = 60
     meta_event_gap_days: int = 5
     meta_event_kind: str = "cusum_abs"
     cusum_threshold_mult: float = 0.8
@@ -84,9 +81,10 @@ class RiskConfig:
     xgboost_min_validation_buy_signals: int = 15
     xgboost_min_validation_precision: float = 0.20
     xgboost_min_validation_recall: float = 0.05
-    xgboost_feature_policy: str = "regime_core"
+    xgboost_feature_policy: str = "regime_explainable"
     xgboost_scale_pos_weight_cap: float = 1.0
     xgboost_min_validation_strategy_uplift: float = 0.002
+    xgboost_min_validation_strategy_trades: int = 8
     xgboost_min_precision_lift: float = 1.05
     xgboost_min_validation_coverage: float = 0.65
     xgboost_entry_thresholds: tuple[float, ...] = (0.05, 0.075, 0.10, 0.125, 0.15, 0.20, 0.25)
@@ -1419,7 +1417,14 @@ def meta_feature_columns(frame: pd.DataFrame, policy: str = "stable_no_macro") -
     cols = [column for column in feature_columns(frame) if column != "hmm_raw_state"]
     if policy == "all":
         return cols
-    if policy not in {"stable_no_macro", "compact_stable", "event_core", "event_macro", "regime_core"}:
+    if policy not in {
+        "stable_no_macro",
+        "compact_stable",
+        "event_core",
+        "event_macro",
+        "regime_core",
+        "regime_explainable",
+    }:
         raise ValueError(f"unknown XGBoost feature policy: {policy}")
 
     unstable_macro_prefixes = (
@@ -1491,7 +1496,7 @@ def meta_feature_columns(frame: pd.DataFrame, policy: str = "stable_no_macro") -
             return [column for column in event_candidates if column in cols]
         return [column for column in event_candidates if column in stable]
 
-    if policy == "regime_core":
+    if policy in {"regime_core", "regime_explainable"}:
         regime_candidates = [
             "ret_20",
             "ret_60",
@@ -1528,7 +1533,10 @@ def meta_feature_columns(frame: pd.DataFrame, policy: str = "stable_no_macro") -
             "hmm_prob_s3",
             "hmm_prob_s4",
         ]
-        return [column for column in regime_candidates if column in stable]
+        selected = [column for column in regime_candidates if column in stable]
+        if policy == "regime_explainable":
+            selected = [column for column in selected if not column.startswith("hmm_prob_")]
+        return selected
 
     # Keep one or two representatives from each economic feature family.  The
     # event sample is small and highly overlapping, so feeding every technical
@@ -1904,6 +1912,16 @@ def fit_meta_xgb_model(target: pd.Series | None = None, config: RiskConfig | Non
     )
 
 
+def purged_training_events(event_frame: pd.DataFrame, prediction_start: pd.Timestamp) -> pd.DataFrame:
+    """Return labels whose full barrier path was observable before prediction_start."""
+    exit_dates = pd.to_datetime(event_frame["tb_exit_date"], errors="coerce")
+    return event_frame.loc[
+        event_frame["tb_label"].notna()
+        & exit_dates.notna()
+        & (exit_dates < prediction_start)
+    ]
+
+
 def train_triple_barrier_meta_model(
     frame: pd.DataFrame,
     events: pd.Series,
@@ -1929,8 +1947,8 @@ def train_triple_barrier_meta_model(
 
     for pred_start in range(start_pos, len(all_index), config.retrain_every_days * 2):
         pred_end = min(pred_start + config.retrain_every_days * 2, len(all_index))
-        train_cut = all_index[max(0, pred_start - config.prediction_horizon_days)]
-        train_events = event_frame.loc[(event_frame.index <= train_cut) & event_frame["tb_label"].notna()]
+        prediction_start = all_index[pred_start]
+        train_events = purged_training_events(event_frame, prediction_start)
         predict_index = all_index[pred_start:pred_end]
         predict_events = event_frame.loc[predict_index]
         predict_events = predict_events[predict_events["is_meta_event"]]
@@ -1940,11 +1958,13 @@ def train_triple_barrier_meta_model(
         pipe = Pipeline([("imputer", SimpleImputer(strategy="median")), ("model", fit_meta_xgb_model(train_target, config))])
         pipe.fit(train_events[cols], train_target)
         probabilities.loc[predict_events.index] = pipe.predict_proba(predict_events[cols])[:, 1]
+        fold_number = len(importances) + 1
         importances.append(
             pd.DataFrame(
                 {
                     "feature": cols,
                     "importance": pipe.named_steps["model"].feature_importances_,
+                    "fold": fold_number,
                 }
             )
         )
@@ -2059,12 +2079,13 @@ def train_triple_barrier_meta_model(
         except ValueError:
             metrics["test_auc"] = float("nan")
 
-    importance_frame = (
-        pd.concat(importances)
-        .groupby("feature", as_index=False)["importance"]
-        .mean()
-        .sort_values("importance", ascending=False)
+    importance_frame = pd.concat(importances).groupby("feature", as_index=False).agg(
+        importance=("importance", "mean"),
+        importance_std=("importance", "std"),
+        fold_selection_rate=("importance", lambda values: float((values > 0).mean())),
     )
+    importance_frame["importance_std"] = importance_frame["importance_std"].fillna(0.0)
+    importance_frame = importance_frame.sort_values("importance", ascending=False)
     return last_pipe, raw_probabilities, metrics, importance_frame
 
 
@@ -2442,6 +2463,7 @@ def apply_xgboost_strategy_gate(
             and np.isfinite(precision_lift)
             and precision_lift >= config.xgboost_min_precision_lift
         )
+        strategy_evidence_pass = xgboost_metrics["test_trades"] >= config.xgboost_min_validation_strategy_trades
         candidates.append(
             {
                 "threshold": float(threshold),
@@ -2455,6 +2477,8 @@ def apply_xgboost_strategy_gate(
                 "return_uplift": float(return_uplift),
                 "sharpe_uplift": float(sharpe_uplift),
                 "trade_quality_pass": bool(trade_quality_pass),
+                "executed_trades": int(xgboost_metrics["test_trades"]),
+                "strategy_evidence_pass": bool(strategy_evidence_pass),
             }
         )
 
@@ -2462,6 +2486,7 @@ def apply_xgboost_strategy_gate(
         candidate
         for candidate in candidates
         if candidate["trade_quality_pass"]
+        and candidate["strategy_evidence_pass"]
         and candidate["return_uplift"] >= config.xgboost_min_validation_strategy_uplift
         and candidate["sharpe_uplift"] >= 0
     ]
@@ -2480,8 +2505,11 @@ def apply_xgboost_strategy_gate(
             "selected_validation_precision": selected["precision"],
             "selected_validation_recall": selected["recall"],
             "selected_validation_precision_lift": selected["precision_lift"],
+            "selected_validation_executed_trades": selected["executed_trades"],
+            "selected_validation_strategy_evidence_pass": selected["strategy_evidence_pass"],
             "threshold_validation": candidates,
             "xgboost_min_validation_strategy_uplift": config.xgboost_min_validation_strategy_uplift,
+            "xgboost_min_validation_strategy_trades": config.xgboost_min_validation_strategy_trades,
             "validation_fallback_total_return": float(fallback_metrics["total_return"]),
             "validation_xgboost_hard_total_return": selected["net_total_return_5bps"],
             "validation_xgboost_hard_return_uplift": selected["return_uplift"],
@@ -2495,7 +2523,11 @@ def apply_xgboost_strategy_gate(
         model_metrics["xgboost_gate_reason"] = "validation_trade_quality_below_threshold"
     elif not strategy_gate_pass:
         model_metrics["xgboost_enabled"] = False
-        model_metrics["xgboost_gate_reason"] = "model_gate_pass_strategy_uplift_below_threshold"
+        model_metrics["xgboost_gate_reason"] = (
+            "model_gate_pass_strategy_trade_evidence_below_threshold"
+            if not selected["strategy_evidence_pass"]
+            else "model_gate_pass_strategy_uplift_below_threshold"
+        )
     else:
         model_metrics["xgboost_enabled"] = True
         model_metrics["xgboost_gate_reason"] = "model_and_strategy_gate_pass"
@@ -2517,7 +2549,8 @@ def backtest_next_open(
     bt["benchmark_ret"] = bt["gold_close"].pct_change().fillna(0)
     equity = 1.0
     peak = 1.0
-    position = 0.0
+    cash = 1.0
+    units = 0.0
     stop_price = np.nan
     take_profit_price = np.nan
     pending_entry_atr = np.nan
@@ -2525,57 +2558,63 @@ def backtest_next_open(
     pending_exit = False
     hmm_exit_streak = 0
     rows: list[dict[str, Any]] = []
-    previous_close = np.nan
     trading_cost_bps = config.realistic_cost_bps if cost_bps is None else float(cost_bps)
 
-    for i, (date, row) in enumerate(bt.iterrows()):
+    for date, row in bt.iterrows():
         open_price = float(row["gold_open"])
         close_price = float(row["gold_close"])
         if not np.isfinite(open_price) or open_price <= 0:
             open_price = close_price
         equity_before = equity
-        carried_position = position
         turnover = 0.0
         exit_reason = ""
 
-        if carried_position > 0 and i > 0 and np.isfinite(previous_close) and previous_close > 0:
-            equity *= 1 + carried_position * (open_price / previous_close - 1)
+        cost_rate = trading_cost_bps / 10000
+        open_equity = cash + units * open_price
 
-        if pending_exit and position > 0:
-            turnover += position
-            equity *= 1 - position * (trading_cost_bps / 10000)
-            position = 0.0
+        if pending_exit and units > 0:
+            proceeds = units * open_price
+            turnover += proceeds / equity_before if equity_before > 0 else 0.0
+            cash += proceeds * (1 - cost_rate)
+            units = 0.0
             stop_price = np.nan
             take_profit_price = np.nan
             exit_reason = "next_open_trend_exit"
 
-        if position > 0 and not pending_exit:
+        if units > 0 and not pending_exit:
             gap_stop = np.isfinite(stop_price) and open_price <= stop_price
             gap_profit = np.isfinite(take_profit_price) and open_price >= take_profit_price
             if gap_stop or gap_profit:
-                turnover += position
-                equity *= 1 - position * (trading_cost_bps / 10000)
-                position = 0.0
+                proceeds = units * open_price
+                turnover += proceeds / equity_before if equity_before > 0 else 0.0
+                cash += proceeds * (1 - cost_rate)
+                units = 0.0
                 stop_price = np.nan
                 take_profit_price = np.nan
                 hmm_exit_streak = 0
                 exit_reason = "atr_stop_gap" if gap_stop else "atr_take_profit_gap"
 
-        drawdown_before = equity / peak - 1
+        open_equity = cash + units * open_price
+        drawdown_before = open_equity / peak - 1
         drawdown_scale = 1.0
         if drawdown_before <= -config.max_drawdown_hard:
             drawdown_scale = config.live_hard_drawdown_position
         elif drawdown_before <= -config.max_drawdown_soft:
             drawdown_scale = config.live_soft_drawdown_position
-        if pending_entry and position <= 0 and drawdown_scale > 0:
-            position = risk_position_size(open_price, pending_entry_atr, config) * drawdown_scale
-            turnover += position
-            equity *= 1 - position * (trading_cost_bps / 10000)
+        if pending_entry and units <= 0 and drawdown_scale > 0:
+            target_fraction = risk_position_size(open_price, pending_entry_atr, config) * drawdown_scale
+            available_equity = max(cash, 0.0)
+            target_notional = target_fraction * available_equity
+            notional = min(target_notional, available_equity / (1 + cost_rate))
+            entry_cost = notional * cost_rate
+            units = notional / open_price if open_price > 0 else 0.0
+            cash -= notional + entry_cost
+            turnover += notional / equity_before if equity_before > 0 else 0.0
             if np.isfinite(pending_entry_atr):
                 stop_price = open_price - config.stop_atr_multiple * pending_entry_atr
                 take_profit_price = open_price + config.profit_atr_multiple * pending_entry_atr
 
-        if position > 0:
+        if units > 0:
             hit_stop = np.isfinite(stop_price) and float(row["gold_low"]) <= stop_price
             hit_profit = np.isfinite(take_profit_price) and float(row["gold_high"]) >= take_profit_price
             if hit_stop:
@@ -2586,21 +2625,23 @@ def backtest_next_open(
                 exit_reason = "atr_take_profit"
             else:
                 end_price = close_price
-            equity *= 1 + position * (end_price / open_price - 1)
             if hit_stop or hit_profit:
-                turnover += position
-                equity *= 1 - position * (trading_cost_bps / 10000)
-                position = 0.0
+                proceeds = units * end_price
+                turnover += proceeds / equity_before if equity_before > 0 else 0.0
+                cash += proceeds * (1 - cost_rate)
+                units = 0.0
                 stop_price = np.nan
                 take_profit_price = np.nan
                 hmm_exit_streak = 0
+
+        equity = cash + units * close_price
 
         strategy_ret = equity / equity_before - 1
         peak = max(peak, equity)
         pending_entry = False
         pending_exit = False
 
-        if position > 0:
+        if units > 0:
             hmm_exit_setup = row["market_state"] in ["熊市", "恐慌"] and close_price < float(row["sma_60"])
             hmm_exit_streak = hmm_exit_streak + 1 if hmm_exit_setup else 0
             model_exit = (
@@ -2613,6 +2654,8 @@ def backtest_next_open(
         elif bool(row.get("tb_accepted_event", False)) and np.isfinite(row.get("atr", np.nan)):
             pending_entry = True
             pending_entry_atr = float(row["atr"])
+
+        position = units * close_price / equity if units > 0 and equity > 0 else 0.0
 
         rows.append(
             {
@@ -2631,8 +2674,6 @@ def backtest_next_open(
                 "take_profit_price": take_profit_price,
             }
         )
-        previous_close = close_price
-
     live = pd.DataFrame(rows).set_index("date")
     live["benchmark_equity"] = (1 + live["benchmark_ret"].fillna(0)).cumprod()
     days = max(len(live), 1)
@@ -2868,6 +2909,43 @@ def run_ablation_experiments(
     return rows
 
 
+def xgboost_feature_groups(importances: pd.DataFrame) -> list[dict[str, Any]]:
+    feature_names = importances["feature"].astype(str).tolist()
+    definitions = [
+        (
+            "波动与交易风险",
+            ("vol_", "ret_vol_adj_", "atr_", "bb_", "adx_", "ret_skew_"),
+            "描述波动扩张、趋势强度、收益偏度和止损距离所处的历史区间。",
+        ),
+        (
+            "跨市场与资金流",
+            ("dxy_", "vix_", "spx_", "gold_dxy_", "gld_"),
+            "刻画美元、风险偏好、股票市场和 GLD 量价资金流对黄金趋势质量的影响。",
+        ),
+        (
+            "趋势与动量",
+            ("ret_", "momentum_", "sma_gap_", "ma_cross_", "trend_age_", "drawdown_"),
+            "描述黄金中长期方向、趋势成熟度与距阶段高点的位置。",
+        ),
+    ]
+    groups: list[dict[str, Any]] = []
+    assigned: set[str] = set()
+    for name, prefixes, rationale in definitions:
+        features = [feature for feature in feature_names if feature not in assigned and feature.startswith(prefixes)]
+        assigned.update(features)
+        groups.append({"name": name, "rationale": rationale, "features": features})
+    remaining = [feature for feature in feature_names if feature not in assigned]
+    if remaining:
+        groups.append(
+            {
+                "name": "其他状态变量",
+                "rationale": "保留少量不能归入上述经济类别但通过预设特征策略的状态变量。",
+                "features": remaining,
+            }
+        )
+    return groups
+
+
 def build_outputs(
     signal_frame: pd.DataFrame,
     backtest_frame: pd.DataFrame,
@@ -2970,6 +3048,7 @@ def build_outputs(
         "ablation": ablation_metrics,
         "modelValidation": model_validation,
         "topFeatures": top_features,
+        "xgboostFeatureGroups": xgboost_feature_groups(importances),
         "stateMapping": {str(k): v for k, v in state_mapping.items()},
         "sources": sources,
         "dataQuality": data_quality,
@@ -2984,14 +3063,15 @@ def build_outputs(
             "GPR 使用 Caldara-Iacoviello 月度地缘政治风险指数，并做月末后 7 天滞后近似。",
             "FOMC 事件来自美联储会议日历，作为事件日和 proximity 特征。",
             "XGBoost 当前预测的是 triple-barrier meta-label：120 日长期趋势 + CUSUM 候选交易是否先触发止盈。",
-            "XGBoost 使用 34 个 regime_core 长期状态特征和无类别权重的强正则 stump，降低短周期变量主导的趋势踏空和概率尺度漂移。",
-            f"正式交易信号仅在验证 AUC >= {config.xgboost_min_validation_auc:.2f}、至少 {config.xgboost_min_validation_buy_signals} 个阈值信号、候选覆盖率 >= {config.xgboost_min_validation_coverage:.0%} 且 precision lift/recall 达标时使用 XGBoost。",
-            "XGBoost 只作为低分尾部否决器过滤候选入场，不用新候选事件的低分强制退出已有持仓；策略还必须在验证段相对 fallback 带来净收益和 Sharpe 增益。",
+            f"XGBoost 使用 {int(model_metrics.get('feature_count', 0))} 个 {config.xgboost_feature_policy} 可解释状态特征和无类别权重的强正则 stump；HMM 概率不再重复进入模型。",
+            f"正式交易信号仅在验证 AUC >= {config.xgboost_min_validation_auc:.2f}、至少 {config.xgboost_min_validation_buy_signals} 个阈值信号、候选覆盖率 >= {config.xgboost_min_validation_coverage:.0%}、至少 {config.xgboost_min_validation_strategy_trades} 次验证交易动作且 precision lift/recall 达标时使用 XGBoost。",
+            "XGBoost 只允许过滤候选入场，不负责退出；当前策略证据闸门未通过时自动回退到长期趋势 + CUSUM + ATR/HMM 风控。",
             "训练和验证截止日已经冻结；2026-06-20 之后的新数据作为 forward holdout，不回流到历史参数选择。",
             f"HMM 使用 expanding walk-forward，并约每 {config.hmm_retrain_every_days} 个交易日重训一次，所有状态概率只使用当时可得数据。",
             f"入场仓位按 ATR 止损距离缩放，使计划初始止损损失不超过组合净值的 {config.max_single_loss:.0%}；隔夜跳空可能使实际损失超过计划值。",
             "实盘模拟使用 t 日收盘信号、t+1 日开盘成交、盘中 ATR 障碍、双边交易成本和回撤降仓约束。",
             "网站主回测采用次日开盘事件驱动口径；盘中障碍按障碍价成交，隔夜跳空穿越障碍按开盘价成交。",
+            "部分仓位回测使用现金与黄金持仓单位逐日盯市，不假设开盘免费再平衡。",
             f"{config.prediction_horizon_days} 日窗口仅用于训练标签和防止标签泄漏，不作为真实持仓的强制退出时间。",
             f"HMM 退出需要熊市/恐慌且跌破 60 日均线连续确认 {config.hmm_exit_confirmation_days} 天。",
             "研究结果不构成投资建议。",
@@ -3118,6 +3198,52 @@ def run_pipeline() -> dict[str, Any]:
         entry_threshold=entry_threshold,
     )
     test_start = features.index[test_mask].min()
+    fallback_test_signals = generate_signals(
+        features,
+        probabilities,
+        config,
+        use_xgboost=False,
+        use_atr=True,
+        start_at=test_start,
+    )
+    forced_xgboost_test_signals = generate_signals(
+        features,
+        probabilities,
+        config,
+        use_xgboost=True,
+        use_atr=True,
+        entry_threshold=entry_threshold,
+        start_at=test_start,
+    )
+    _, fallback_test_metrics = backtest_next_open(
+        fallback_test_signals,
+        test_mask,
+        config,
+        cost_bps=5.0,
+        write_log=False,
+    )
+    _, forced_xgboost_test_metrics = backtest_next_open(
+        forced_xgboost_test_signals,
+        test_mask,
+        config,
+        cost_bps=5.0,
+        write_log=False,
+    )
+    model_metrics.update(
+        {
+            "test_contribution_is_diagnostic_only": True,
+            "test_fallback_total_return_5bps": fallback_test_metrics["total_return"],
+            "test_forced_xgboost_total_return_5bps": forced_xgboost_test_metrics["total_return"],
+            "test_xgboost_return_contribution_5bps": (
+                forced_xgboost_test_metrics["total_return"] - fallback_test_metrics["total_return"]
+            ),
+            "test_fallback_sharpe_5bps": fallback_test_metrics["sharpe"],
+            "test_forced_xgboost_sharpe_5bps": forced_xgboost_test_metrics["sharpe"],
+            "test_xgboost_sharpe_contribution_5bps": (
+                forced_xgboost_test_metrics["sharpe"] - fallback_test_metrics["sharpe"]
+            ),
+        }
+    )
     evaluation_signals = generate_signals(
         features,
         probabilities,

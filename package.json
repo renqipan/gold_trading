@@ -9,9 +9,10 @@
     "lint": "tsc --noEmit --project tsconfig.lint.json",
     "check:data": "node scripts/check-site-data.mjs",
     "test:sources": ".venv-research/bin/python scripts/test_data_sources.py",
+    "test:strategy": ".venv-research/bin/python scripts/test_strategy_engine.py",
     "update:data": ".venv-research/bin/python research/gold_research_pipeline.py --json",
     "update:site": "npm run update:data && npm run check:data && npm run build",
-    "verify": "npm run check:data && npm run lint && npm run build"
+    "verify": "npm run test:strategy && npm run check:data && npm run lint && npm run build"
   },
   "dependencies": {
     "next": "^16.2.9",
