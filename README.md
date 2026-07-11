@@ -2,10 +2,10 @@
 
 这是一个中文黄金交易研究项目，包含两部分：
 
-- `research/gold_research_pipeline.py`：HMM + XGBoost 的黄金交易研究算法。
-- Next.js 网站：展示黄金价格走势、HMM 市场状态、XGBoost meta-label 分数、今日交易指南和样本外回测。
+- `research/gold_research_pipeline.py`：趋势 + CUSUM + HMM 风控的黄金交易研究算法。
+- Next.js 网站：展示黄金价格走势、HMM 市场状态、今日交易指南和样本外回测。
 
-当前策略使用 triple-barrier/meta-labeling。模型预测的不是固定 30 日后涨跌，而是候选趋势交易是否会先触发止盈，而不是先触发止损。
+当前正式策略不依赖分类模型，全部交易均由可解释规则生成。
 
 完整的策略合理性、XGBoost 贡献、回测缺陷修正和收益瓶颈记录在 `research/STRATEGY_AUDIT.md`。
 
@@ -14,15 +14,12 @@
 - 标的：COMEX 迷你黄金连续合约 proxy，东方财富 `101.QO00Y`。
 - HMM 状态：牛市、熊市、震荡、恐慌；状态概率使用前向过滤，并按约 252 个交易日 expanding walk-forward 重训，避免长期使用 2021 年的静态状态模型。
 - 事件采样：120 日长期技术趋势 + CUSUM 波动阈值；HMM 主要用于状态监控和退出风控。
-- XGBoost 目标：`P(profit first)`。
-- XGBoost 输入策略：使用 30 个 `regime_explainable` 特征，覆盖中长期趋势、波动、美元/风险市场和 GLD 资金流；删除与入场逻辑重复且跨重训块含义可能漂移的 4 个 HMM 概率。
-- XGBoost 训练策略：使用强正则 `max_depth=1` stump，不使用会扭曲概率尺度的类别权重；模型只过滤候选入场，不再用新事件分数强制退出已有趋势仓位。
-- 模型闸门：只有验证段 raw AUC >= 0.52，且在买入阈值下有足够验证信号、precision 和 recall 达标时，XGBoost 才通过模型闸门。
-- 策略闸门：模型闸门通过后，还必须在冻结验证段相对 fallback 带来收益和 Sharpe 增益，并至少产生 8 次真实交易动作，正式交易才使用 XGBoost。当前只有 5 次，故自动禁用模型交易接管。
-- 买入：正式策略回退为 120 日趋势 + CUSUM；XGBoost 继续输出研究评分，但不否决正式候选事件。
-- 卖出：XGBoost 默认不负责退出；HMM 趋势破坏或 ATR 止盈/止损触发退出。
-- 持仓：不设置强制持仓到期。60 日只用于训练标签窗口和防止标签泄漏。
-- 风控：最高 100% 仓位、1.0x 杠杆；增长型仓位按 `12% / 初始止损距离` 缩放，保证初始 6 ATR 止损对应的组合计划损失不超过 12%；10 ATR 止盈，HMM 熊市/恐慌跌破 60 日均线连续确认 20 天退出。
+- 低点入场审计：单独测试价格低于 60/120 日均线、240 日新低、低点反转确认，以及与长期趋势的并集；这些模式均未同时改善冻结验证收益、Sharpe 和测试稳定性，因此正式策略继续要求 120 日趋势成立。
+- XGBoost 结论：已完全退出日常流水线、依赖、网站数据和正式交易算法；历史失败原因保留在审计文档中。
+- 买入：120 日长期趋势成立后，由 CUSUM 波动事件触发下一交易日开盘入场。
+- 卖出：HMM 趋势破坏或 ATR 止盈/止损触发退出。
+- 持仓：不设置强制持仓到期。
+- 风控：最高 100% 仓位、1.0x 杠杆；普通趋势按 10% 计划止损风险预算缩放，价格高于 120 日均线且 120 日收益达到 12% 时使用 14% 强趋势预算；10 ATR 止盈，6 ATR 止损，HMM 熊市/恐慌跌破 60 日均线连续确认 20 天退出。
 - 正式回测：`t` 日收盘信号、`t+1` 日开盘成交，ATR 止盈止损按盘中障碍价格结算；部分仓位使用现金与黄金持仓单位逐日盯市，不假设开盘免费再平衡；禁止同一交易日退出后立即重入，并使用标准日收益 Sharpe。
 - 实盘模拟：额外输出 `t` 日收盘信号、`t+1` 日开盘成交、盘中 ATR 障碍、双边 8bps 交易成本和回撤降仓约束下的模拟结果。
 - 数据修正：CPI 同比按下一月中旬滞后，COT 按报告日后 3 天滞后；实际利率优先使用 FRED `DFII10`，取不到时回退为 `US10Y - 滞后 CPI YoY`；Cboe VIX、CFTC managed money、CPI/核心 CPI/非农 surprise、GPR 和 FOMC 作为宏观/事件特征接入。
@@ -72,14 +69,14 @@ npm run update:data
 - `public/data/gold_backtest.json`
 - `local_logs/gold_signals.csv`
 - `local_logs/gold_ablation.csv`
-- `local_logs/gold_model_validation.csv`
 - `local_logs/gold_live_execution.csv`
 - `local_logs/gold_backtest_yearly.csv`
 - `local_logs/gold_parameter_stability.csv`
+- `local_logs/gold_entry_mode_comparison.csv`
 - `local_logs/data_quality_report.json`
 
 `public/data/*.json` 会被网站读取并提交到 GitHub；`local_logs/` 和 `data/raw/` 只保存在本地。
-网站同时读取 `gold_research_latest.json` 中的 `ablation`、`modelValidation` 和 `liveExecutionMetrics` 字段，保证策略归因、模型验证和实盘模拟结果随数据更新。
+网站同时读取 `gold_research_latest.json` 中的 `ablation` 和 `liveExecutionMetrics` 字段，保证策略归因和实盘模拟结果随数据更新。
 
 ## 本地运行网站
 
@@ -106,7 +103,7 @@ git push origin main
 
 Vercel 会使用仓库里的 Next.js 项目构建网站。研究脚本本身不会在 Vercel 上自动运行；需要先在本地运行研究流水线，再提交更新后的 `public/data/*.json`。
 
-网站页面中的价格、概率、仓位、阈值、HMM 状态、回测收益、Sharpe、特征重要性等数字都从 `public/data/*.json` 读取，不在 `app/page.tsx` 手动维护。`npm run update:site` 会先运行研究算法刷新 JSON，再执行数据一致性检查和网站构建。
+网站页面中的价格、仓位、HMM 状态、回测收益和 Sharpe 等数字都从 `public/data/*.json` 读取，不在 `app/page.tsx` 手动维护。`npm run update:site` 会先运行研究算法刷新 JSON，再执行数据一致性检查和网站构建。
 
 如需测试外部行情源连通性：
 

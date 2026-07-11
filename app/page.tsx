@@ -11,8 +11,6 @@ type Point = {
   sma_120?: number | null;
   state?: string;
   stateCode?: string;
-  pUp30d?: number;
-  pUpHorizon?: number;
   position?: number;
   guide?: string;
   atrStop?: number | null;
@@ -355,23 +353,7 @@ export default function Home() {
   const latestPoint = prices[prices.length - 1];
   const previousPoint = prices[prices.length - 2];
   const oneDay = latestPoint.close / previousPoint.close - 1;
-  const horizonDays = latest.predictionHorizonDays ?? 30;
-  const modelProbability = latest.pProfitFirst ?? latest.pUpHorizon ?? latest.pUp30d;
-  const rawAuc = latest.modelMetrics.raw_test_auc ?? latest.modelMetrics.test_auc;
   const signalTone = actionClass(guide);
-  const modelScore = modelProbability * 100;
-  const featureMax = Math.max(0.000001, ...latest.topFeatures.map((item) => item.importance));
-  const modelContext = latest.isMetaEvent ? "当前候选交易" : "最近候选交易延续";
-  const gateReason = latest.modelMetrics.xgboost_gate_reason;
-  const modelGateText = latest.xgboostEnabled
-    ? "XGBoost 已通过模型和策略验证闸门，可参与候选入场过滤；退出仍由 ATR 与 HMM 风控决定。"
-    : latest.modelMetrics.xgboost_model_gate_pass && gateReason === "model_gate_pass_strategy_trade_evidence_below_threshold"
-      ? `XGBoost 排序和候选质量已通过模型闸门，但冻结验证段只有 ${latest.modelMetrics.selected_validation_executed_trades} 次真实交易动作，证据不足；正式策略自动回退到长期趋势、CUSUM 与 ATR/HMM 风控。`
-    : latest.modelMetrics.xgboost_model_gate_pass && gateReason === "model_gate_pass_strategy_uplift_below_threshold"
-      ? "XGBoost 高分信号已通过模型闸门，但验证段入场过滤未带来策略增益，今日操作仍由 HMM/CUSUM/ATR 风控决定。"
-      : latest.modelMetrics.xgboost_statistical_valid
-      ? "XGBoost 排序验证已修复，但高阈值交易质量未达闸门，今日操作仍由 HMM/CUSUM/ATR 风控决定。"
-      : "XGBoost 排序验证未通过，今日操作由 HMM/CUSUM/ATR 风控决定。";
 
   return (
     <main>
@@ -381,7 +363,7 @@ export default function Home() {
             <span>Au</span>
             黄金交易研究站
           </div>
-          <div className="navMeta">HMM + XGBoost · {latest.asOf}</div>
+          <div className="navMeta">趋势 + HMM · {latest.asOf}</div>
         </nav>
 
         <div className="heroGrid">
@@ -389,23 +371,16 @@ export default function Home() {
             <p className="eyebrow">今日操作</p>
             <h1 className={signalTone}>{guide}</h1>
             <p className="decisionCopy">
-              当前 HMM 状态为{latest.marketState}，
-              {modelContext}的 XGBoost 止盈优先评分为 {pct(modelProbability, 1)}。
-              {modelGateText}
+              当前 HMM 状态为{latest.marketState}。正式信号由 120 日长期趋势与 CUSUM 事件共同触发，
+              HMM 只负责确认趋势破坏退出。
             </p>
             <div className="decisionMeta">
-              <span>入场阈值 {pct(latest.thresholds.buyAbove, 0)}</span>
-              <span>{horizonDays} 日标签窗口</span>
+              <span>常态风险 {pct(latest.risk.normal_trend_risk_budget, 0)}</span>
+              <span>强趋势风险 {pct(latest.risk.strong_trend_risk_budget, 0)}</span>
               <span>建议仓位 {pct(latest.position, 1)}</span>
             </div>
             <div className="decisionGauges">
               <Gauge label="建议仓位" value={latest.position * 100} tone={latest.position > 0 ? "buy" : signalTone} />
-              <Gauge
-                label="XGBoost 评分"
-                value={modelScore}
-                threshold={latest.thresholds.buyAbove * 100}
-                tone={modelProbability >= latest.thresholds.buyAbove ? "buy" : modelProbability <= latest.thresholds.sellBelow ? "sell" : "watch"}
-              />
             </div>
           </div>
 
@@ -413,7 +388,7 @@ export default function Home() {
             <MetricCard label="黄金价格" value={num(latest.price, 2)} detail={`${latest.asset} · 日变化 ${pct(oneDay, 2)}`} />
             <MetricCard label="ATR 止损线" value={latest.atrStop ? num(latest.atrStop, 2) : "无"} detail={`止盈 ${latest.risk.profit_atr_multiple.toFixed(0)} ATR · 止损 ${latest.risk.stop_atr_multiple.toFixed(0)} ATR`} />
             <MetricCard label="历史测试 Sharpe" value={num(latest.backtestMetrics.sharpe, 2)} detail={`5bps 净收益 ${pct(latest.backtestMetrics.net_total_return_5bps, 1)}`} />
-            <MetricCard label="Raw AUC" value={num(rawAuc, 2)} detail={`测试期交易动作 ${latest.backtestMetrics.test_trades}`} />
+            <MetricCard label="最大回撤" value={pct(latest.backtestMetrics.max_drawdown, 1)} detail={`正式策略交易动作 ${latest.backtestMetrics.test_trades}`} />
           </div>
         </div>
       </section>
@@ -433,7 +408,7 @@ export default function Home() {
           </div>
           <div className="rules">
             <p><strong>趋势事件</strong><span>当 120 日长期趋势成立时，用 CUSUM 波动阈值触发候选交易事件，最小间隔 {latest.risk.meta_event_gap_days} 个交易日；HMM 主要负责状态监控和退出风控。</span></p>
-            <p><strong>{latest.xgboostEnabled ? `Meta P > ${pct(latest.thresholds.buyAbove, 1)}` : "Fallback 入场"}</strong><span>{latest.xgboostEnabled ? "XGBoost 只否决低分尾部候选入场。" : "XGBoost 策略闸门未通过，候选事件由长期趋势 + CUSUM 决定。"} 仓位再按初始 ATR 止损距离缩放，计划单笔损失不超过 {pct(latest.risk.max_single_loss, 0)}。</span></p>
+            <p><strong>正式趋势入场</strong><span>候选事件只由长期趋势 + CUSUM 决定。常态计划止损风险为 {pct(latest.risk.normal_trend_risk_budget, 0)}；价格高于 120 日均线且 120 日收益达到 {pct(latest.risk.strong_trend_ret_120_threshold, 0)} 时，提高至 {pct(latest.risk.strong_trend_risk_budget, 0)}。</span></p>
             <p><strong>退出规则</strong><span>买入后不设置强制持仓到期；退出仅由 {latest.risk.profit_atr_multiple.toFixed(0)} ATR 止盈、{latest.risk.stop_atr_multiple.toFixed(0)} ATR 止损，或 HMM 熊市/恐慌跌破 60 日均线连续确认 {latest.risk.hmm_exit_confirmation_days} 天决定。</span></p>
           </div>
         </section>
@@ -447,35 +422,16 @@ export default function Home() {
           </div>
           <div className="riskList">
             <span>最大仓位 {pct(latest.risk.max_position, 0)}</span>
-            <span>计划止损风险上限 {pct(latest.risk.max_single_loss, 0)}</span>
+            <span>常态风险预算 {pct(latest.risk.normal_trend_risk_budget, 0)}</span>
+            <span>强趋势风险预算 {pct(latest.risk.strong_trend_risk_budget, 0)}</span>
             <span>最大杠杆 {latest.risk.max_leverage.toFixed(1)}x</span>
             <span>止盈 {latest.risk.profit_atr_multiple.toFixed(0)} ATR</span>
             <span>止损 {latest.risk.stop_atr_multiple.toFixed(0)} ATR</span>
-            <span>训练标签窗口 {horizonDays} 天</span>
             <span>HMM 退出确认 {latest.risk.hmm_exit_confirmation_days} 天</span>
             <span>CUSUM {latest.risk.cusum_threshold_mult.toFixed(1)}x</span>
           </div>
         </section>
 
-        <section className="panel">
-          <div className="sectionHead">
-            <div>
-              <p className="eyebrow">特征贡献</p>
-              <h2>XGBoost Top 10</h2>
-            </div>
-          </div>
-          <div className="featureList">
-            {latest.topFeatures.map((item) => (
-              <div key={item.feature} className="featureRow">
-                <span>{item.feature}</span>
-                <div>
-                  <i style={{ width: `${Math.max((item.importance / featureMax) * 100, 4)}%` }} />
-                </div>
-                <em>{item.importance.toFixed(4)}</em>
-              </div>
-            ))}
-          </div>
-        </section>
 
         <section className="panel wide disclaimer">
           <div className="sectionHead">
@@ -486,12 +442,12 @@ export default function Home() {
           </div>
           <div className="disclaimerGrid">
             <p>
-              本页面展示的是历史数据驱动的量化研究结果，模型信号可能失效，
+              本页面展示的是历史数据驱动的量化研究结果，策略信号可能失效，
               不应被理解为对黄金、期货、ETF 或任何金融产品的买卖建议。
             </p>
             <p>
               黄金价格采用 {latest.asset}；VIX、实际利率和 ETF 资金流中存在 proxy 因子，
-              回测结果受数据源、交易成本、滑点和模型设定影响。
+              回测结果受数据源、交易成本、滑点和参数设定影响。
             </p>
             <p>
               任何真实交易都需要结合账户风险承受能力、流动性、保证金规则和独立判断。

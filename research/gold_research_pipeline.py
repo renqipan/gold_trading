@@ -31,7 +31,6 @@ from sklearn.metrics import (
 )
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
-from xgboost import XGBClassifier
 
 warnings.filterwarnings("ignore")
 
@@ -64,7 +63,11 @@ class RiskConfig:
     down_threshold: float = 0.36
     max_position: float = 1.0
     max_leverage: float = 1.0
-    max_single_loss: float = 0.12
+    max_single_loss: float = 0.14
+    dynamic_trend_risk_enabled: bool = True
+    normal_trend_risk_budget: float = 0.10
+    strong_trend_risk_budget: float = 0.14
+    strong_trend_ret_120_threshold: float = 0.12
     max_drawdown_soft: float = 0.18
     max_drawdown_hard: float = 0.30
     atr_window: int = 14
@@ -1093,13 +1096,35 @@ def compute_atr(frame: pd.DataFrame, prefix: str = "gold", window: int = 14) -> 
     return true_range.rolling(window).mean()
 
 
-def risk_position_size(entry_price: float, atr: float, config: RiskConfig) -> float:
+def risk_position_size(
+    entry_price: float,
+    atr: float,
+    config: RiskConfig,
+    risk_budget: float | None = None,
+) -> float:
     """Cap portfolio loss at the configured fraction if the initial ATR stop is hit."""
     if not np.isfinite(entry_price) or entry_price <= 0 or not np.isfinite(atr) or atr <= 0:
         return 0.0
     stop_risk_fraction = config.stop_atr_multiple * atr / entry_price
-    risk_limited = config.max_single_loss / stop_risk_fraction if stop_risk_fraction > 0 else 0.0
+    budget = config.max_single_loss if risk_budget is None else float(risk_budget)
+    risk_limited = budget / stop_risk_fraction if stop_risk_fraction > 0 else 0.0
     return float(max(0.0, min(config.max_position, config.max_leverage, risk_limited)))
+
+
+def trend_risk_budget(row: Any, config: RiskConfig) -> float:
+    if not config.dynamic_trend_risk_enabled:
+        return config.max_single_loss
+    ret_120 = row.get("ret_120", np.nan) if isinstance(row, pd.Series) else getattr(row, "ret_120", np.nan)
+    close = row.get("gold_close", np.nan) if isinstance(row, pd.Series) else getattr(row, "gold_close", np.nan)
+    sma_120 = row.get("sma_120", np.nan) if isinstance(row, pd.Series) else getattr(row, "sma_120", np.nan)
+    strong = (
+        np.isfinite(ret_120)
+        and np.isfinite(close)
+        and np.isfinite(sma_120)
+        and ret_120 >= config.strong_trend_ret_120_threshold
+        and close > sma_120
+    )
+    return config.strong_trend_risk_budget if strong else config.normal_trend_risk_budget
 
 
 def add_trend_quality_features(frame: pd.DataFrame) -> pd.DataFrame:
@@ -1162,6 +1187,11 @@ def build_features(data: pd.DataFrame, config: RiskConfig) -> pd.DataFrame:
     frame["atr_pct"] = frame["atr"] / close
     frame["drawdown_120"] = close / close.rolling(120).max() - 1
     frame["drawdown_252"] = close / close.rolling(252).max() - 1
+    prior_low_240 = close.shift(1).rolling(240).min()
+    frame["distance_to_prior_low_240"] = close / prior_low_240.replace(0, np.nan) - 1
+    frame["new_low_240"] = (close <= prior_low_240).astype(float)
+    frame["recent_new_low_240"] = frame["new_low_240"].rolling(20, min_periods=1).max()
+    frame["rebound_from_low_20"] = close / close.rolling(20).min().replace(0, np.nan) - 1
     frame["range_pct"] = (frame["gold_high"] - frame["gold_low"]) / close
     frame["ma_cross_5_20"] = frame["sma_5"] / frame["sma_20"] - 1
     frame["ma_cross_20_60"] = frame["sma_20"] / frame["sma_60"] - 1
@@ -1337,6 +1367,10 @@ def feature_columns(frame: pd.DataFrame) -> list[str]:
         "sma_gap_",
         "vol_",
         "drawdown_",
+        "distance_to_prior_low_",
+        "new_low_",
+        "recent_new_low_",
+        "rebound_from_low_",
         "range_",
         "ma_cross_",
         "vol_ratio_",
@@ -1758,6 +1792,36 @@ def primary_long_signal(frame: pd.DataFrame, mode: str = "trend_slow") -> pd.Ser
             (frame["gold_close"] > frame["sma_120"])
             | ((frame["sma_20"] > frame["sma_60"]) & (frame["sma_60"] > frame["sma_120"]))
         )
+    if mode == "below_sma_60":
+        return frame["gold_close"] < frame["sma_60"]
+    if mode == "below_sma_120":
+        return frame["gold_close"] < frame["sma_120"]
+    if mode == "dip_recovery_60":
+        return (
+            (frame["gold_close"] < frame["sma_60"])
+            & (frame["gold_close"] > frame["sma_20"])
+            & (frame["ret_5"] > 0)
+        )
+    if mode == "dip_recovery_120":
+        return (
+            (frame["gold_close"] < frame["sma_120"])
+            & (frame["gold_close"] > frame["sma_20"])
+            & (frame["ret_20"] > 0)
+        )
+    if mode == "new_low_240":
+        return frame["new_low_240"] > 0
+    if mode == "dip_recovery_240":
+        return (
+            (frame["recent_new_low_240"] > 0)
+            & (frame["gold_close"] > frame["sma_20"])
+            & (frame["ret_5"] > 0)
+        )
+    if mode == "trend_or_dip_60":
+        return primary_long_signal(frame, "trend_slow") | primary_long_signal(frame, "dip_recovery_60")
+    if mode == "trend_or_dip_120":
+        return primary_long_signal(frame, "trend_slow") | primary_long_signal(frame, "dip_recovery_120")
+    if mode == "trend_or_dip_240":
+        return primary_long_signal(frame, "trend_slow") | primary_long_signal(frame, "dip_recovery_240")
     if mode == "hmm_trend":
         return (
             (frame["market_state"].isin(["牛市", "震荡"]) & (frame["gold_close"] > frame["sma_60"]))
@@ -2207,6 +2271,16 @@ def generate_signals(
     signal_frame["atr_risk_used_for_signal"] = bool(use_atr)
     signal_frame["payoff_ratio"] = config.profit_atr_multiple / config.stop_atr_multiple
     signal_frame["historical_train_win_rate"] = np.nan
+    strong_trend = (
+        config.dynamic_trend_risk_enabled
+        & (signal_frame["gold_close"] > signal_frame["sma_120"])
+        & (signal_frame["ret_120"] >= config.strong_trend_ret_120_threshold)
+    )
+    signal_frame["trend_risk_budget"] = np.where(
+        strong_trend,
+        config.strong_trend_risk_budget,
+        config.normal_trend_risk_budget if config.dynamic_trend_risk_enabled else config.max_single_loss,
+    )
 
     positions = []
     stop_prices = []
@@ -2296,7 +2370,7 @@ def generate_signals(
 
         if not in_position and not exited_this_bar and accepted_arr[i] and np.isfinite(atr):
             in_position = True
-            current_position = risk_position_size(close, atr, config)
+            current_position = risk_position_size(close, atr, config, trend_risk_budget(row, config))
             entry = close
             fill_price = entry
             stop_price = entry - config.stop_atr_multiple * atr
@@ -2554,6 +2628,7 @@ def backtest_next_open(
     stop_price = np.nan
     take_profit_price = np.nan
     pending_entry_atr = np.nan
+    pending_entry_risk_budget = config.max_single_loss
     pending_entry = False
     pending_exit = False
     hmm_exit_streak = 0
@@ -2602,7 +2677,10 @@ def backtest_next_open(
         elif drawdown_before <= -config.max_drawdown_soft:
             drawdown_scale = config.live_soft_drawdown_position
         if pending_entry and units <= 0 and drawdown_scale > 0:
-            target_fraction = risk_position_size(open_price, pending_entry_atr, config) * drawdown_scale
+            target_fraction = (
+                risk_position_size(open_price, pending_entry_atr, config, pending_entry_risk_budget)
+                * drawdown_scale
+            )
             available_equity = max(cash, 0.0)
             target_notional = target_fraction * available_equity
             notional = min(target_notional, available_equity / (1 + cost_rate))
@@ -2654,6 +2732,7 @@ def backtest_next_open(
         elif bool(row.get("tb_accepted_event", False)) and np.isfinite(row.get("atr", np.nan)):
             pending_entry = True
             pending_entry_atr = float(row["atr"])
+            pending_entry_risk_budget = trend_risk_budget(row, config)
 
         position = units * close_price / equity if units > 0 and equity > 0 else 0.0
 
@@ -2804,6 +2883,12 @@ def run_parameter_stability_report(
         ("hmm_confirm_30", replace(config, hmm_exit_confirmation_days=30)),
         ("event_gap_3", replace(config, meta_event_gap_days=3)),
         ("event_gap_8", replace(config, meta_event_gap_days=8)),
+        ("normal_risk_9", replace(config, normal_trend_risk_budget=0.09)),
+        ("normal_risk_11", replace(config, normal_trend_risk_budget=0.11)),
+        ("strong_risk_12", replace(config, strong_trend_risk_budget=0.12)),
+        ("strong_risk_15", replace(config, strong_trend_risk_budget=0.15, max_single_loss=0.15)),
+        ("strong_threshold_10", replace(config, strong_trend_ret_120_threshold=0.10)),
+        ("strong_threshold_15", replace(config, strong_trend_ret_120_threshold=0.15)),
     ]
     rows: list[dict[str, Any]] = []
     empty_probabilities = pd.Series(np.nan, index=frame.index)
@@ -2839,14 +2924,68 @@ def run_parameter_stability_report(
     return rows
 
 
+def run_entry_mode_comparison_report(
+    frame: pd.DataFrame,
+    config: RiskConfig,
+    validation_mask: pd.Series,
+    test_mask: pd.Series,
+) -> list[dict[str, Any]]:
+    """Compare predeclared trend and low-price entry environments under the formal engine."""
+    modes = [
+        "trend_slow",
+        "below_sma_60",
+        "below_sma_120",
+        "dip_recovery_60",
+        "dip_recovery_120",
+        "trend_or_dip_60",
+        "trend_or_dip_120",
+        "new_low_240",
+        "dip_recovery_240",
+        "trend_or_dip_240",
+    ]
+    empty_probabilities = pd.Series(np.nan, index=frame.index)
+    rows: list[dict[str, Any]] = []
+    for mode in modes:
+        variant = replace(config, primary_signal_mode=mode)
+        row: dict[str, Any] = {"mode": mode, "selected": mode == config.primary_signal_mode}
+        for segment, mask in [("validation", validation_mask), ("test", test_mask)]:
+            mask_series = pd.Series(mask, index=frame.index).astype(bool)
+            signals = generate_signals(
+                frame,
+                empty_probabilities,
+                variant,
+                use_xgboost=False,
+                use_atr=True,
+                start_at=frame.index[mask_series].min(),
+            )
+            _, metrics = backtest_next_open(
+                signals,
+                mask,
+                variant,
+                cost_bps=5.0,
+                write_log=False,
+            )
+            row.update(
+                {
+                    f"{segment}_return_5bps": metrics["total_return"],
+                    f"{segment}_sharpe_5bps": metrics["sharpe"],
+                    f"{segment}_max_drawdown_5bps": metrics["max_drawdown"],
+                    f"{segment}_trades": metrics["test_trades"],
+                    f"{segment}_active_day_ratio": metrics["active_day_ratio"],
+                }
+            )
+        rows.append(row)
+    pd.DataFrame(rows).to_csv(LOCAL_LOGS / "gold_entry_mode_comparison.csv", index=False, encoding="utf-8-sig")
+    return rows
+
+
 def run_ablation_experiments(
     frame: pd.DataFrame,
-    probabilities: pd.Series,
     config: RiskConfig,
     test_mask: pd.Series,
     formal_signals: pd.DataFrame | None = None,
-    entry_threshold: float | None = None,
 ) -> list[dict[str, Any]]:
+    probabilities = pd.Series(np.nan, index=frame.index)
     trend_signal = primary_long_signal(frame, "trend_slow")
     hmm_signal = primary_long_signal(frame, config.primary_signal_mode)
     test_mask_series = pd.Series(test_mask, index=frame.index).astype(bool)
@@ -2869,35 +3008,32 @@ def run_ablation_experiments(
         ),
         (
             "D_trend_cusum",
-            "技术趋势 + CUSUM，无 HMM/ATR/XGBoost",
+            "技术趋势 + CUSUM，无 HMM/ATR",
             generate_signals(frame, probabilities, config, use_xgboost=False, use_atr=False, primary_mode="trend_slow", start_at=test_start),
         ),
         (
             "E_primary_cusum",
-            "正式主趋势 + CUSUM，无 XGBoost/ATR",
+            "正式主趋势 + CUSUM，无 ATR",
             generate_signals(frame, probabilities, config, use_xgboost=False, use_atr=False, start_at=test_start),
         ),
         (
             "F_primary_cusum_atr",
-            "正式主趋势 + CUSUM + ATR，无 XGBoost",
-            generate_signals(frame, probabilities, config, use_xgboost=False, use_atr=True, start_at=test_start),
-        ),
-        (
-            "G_primary_cusum_xgboost",
-            "正式主趋势 + CUSUM + XGBoost，无 ATR",
-            generate_signals(frame, probabilities, config, use_xgboost=True, use_atr=False, entry_threshold=entry_threshold, start_at=test_start),
-        ),
-        (
-            "H_primary_cusum_xgboost_atr",
-            "正式主趋势 + CUSUM + XGBoost + ATR",
-            generate_signals(frame, probabilities, config, use_xgboost=True, use_atr=True, entry_threshold=entry_threshold, start_at=test_start),
+            "正式主趋势 + CUSUM + ATR（固定 12% 风险）",
+            generate_signals(
+                frame,
+                probabilities,
+                replace(config, dynamic_trend_risk_enabled=False, max_single_loss=0.12),
+                use_xgboost=False,
+                use_atr=True,
+                start_at=test_start,
+            ),
         ),
     ]
     if formal_signals is not None:
         variants.append(
             (
-                "I_formal_gated_strategy",
-                "正式闸门策略",
+                "G_formal_strategy",
+                "正式动态风险策略",
                 formal_signals,
             )
         )
@@ -2949,14 +3085,12 @@ def xgboost_feature_groups(importances: pd.DataFrame) -> list[dict[str, Any]]:
 def build_outputs(
     signal_frame: pd.DataFrame,
     backtest_frame: pd.DataFrame,
-    model_metrics: dict[str, float],
     backtest_metrics: dict[str, float],
     live_execution_metrics: dict[str, float],
     forward_holdout_metrics: dict[str, Any],
     yearly_backtest_metrics: list[dict[str, Any]],
     ablation_metrics: list[dict[str, Any]],
-    model_validation: list[dict[str, Any]],
-    importances: pd.DataFrame,
+    entry_mode_comparison: list[dict[str, Any]],
     sources: dict[str, str],
     state_mapping: dict[int, str],
     data_quality: dict[str, Any],
@@ -2966,9 +3100,6 @@ def build_outputs(
 
     log_columns = [
         "gold_close",
-        "p_profit_first",
-        "p_profit_first_event",
-        "p_up_30d",
         "market_state_code",
         "market_state",
         "raw_signal",
@@ -2984,6 +3115,7 @@ def build_outputs(
         "atr_pct",
         "payoff_ratio",
         "historical_train_win_rate",
+        "trend_risk_budget",
         "dxy_close",
         "us10y_close",
         "tips_10y_real_yield",
@@ -3004,9 +3136,14 @@ def build_outputs(
     existing = [column for column in log_columns if column in signal_frame.columns]
     signal_frame[existing].to_csv(LOCAL_LOGS / "gold_signals.csv", encoding="utf-8-sig")
 
-    latest = signal_frame.dropna(subset=["gold_close", "p_up_30d"]).iloc[-1]
-    previous = signal_frame.dropna(subset=["gold_close", "p_up_30d"]).iloc[-2]
-    top_features = importances.head(10).to_dict("records")
+    latest = signal_frame.dropna(subset=["gold_close"]).iloc[-1]
+    previous = signal_frame.dropna(subset=["gold_close"]).iloc[-2]
+    public_risk = {
+        key: value
+        for key, value in asdict(config).items()
+        if not key.startswith("xgboost_")
+        and key not in {"up_threshold", "down_threshold", "prediction_horizon_days"}
+    }
 
     latest_json = {
         "asOf": str(latest.name.date()),
@@ -3014,18 +3151,8 @@ def build_outputs(
         "assetDetail": "东方财富国际期货 secid=101.QO00Y，作为黄金价格主序列",
         "price": float(latest["gold_close"]),
         "dailyChange": float(latest["gold_close"] / previous["gold_close"] - 1),
-        "pUp30d": float(latest["p_up_30d"]),
-        "pUpHorizon": float(latest["p_up_30d"]),
-        "pProfitFirst": float(latest["p_profit_first"]),
         "isMetaEvent": bool(latest["tb_event"]),
         "isAcceptedEvent": bool(latest["tb_accepted_event"]),
-        "xgboostEnabled": bool(model_metrics.get("xgboost_enabled", False)),
-        "predictionHorizonDays": config.prediction_horizon_days,
-        "predictionTarget": (
-            f"{config.primary_signal_mode} + {config.meta_event_kind} 候选交易在 {config.prediction_horizon_days} 个交易日训练标签窗口内，"
-            f"是否先触发 {config.profit_atr_multiple:g} ATR 止盈而不是 "
-            f"{config.stop_atr_multiple:g} ATR 止损"
-        ),
         "marketStateCode": str(latest["market_state_code"]),
         "marketState": str(latest["market_state"]),
         "guide": str(latest["guide"]),
@@ -3034,21 +3161,13 @@ def build_outputs(
         "atrStop": None if pd.isna(latest["atr_stop"]) else float(latest["atr_stop"]),
         "takeProfit": None if pd.isna(latest["tb_take_profit"]) else float(latest["tb_take_profit"]),
         "atrPct": float(latest["atr_pct"]),
-        "thresholds": {
-            "buyAbove": config.up_threshold,
-            "selectedCandidate": float(model_metrics.get("selected_entry_threshold", config.up_threshold)),
-            "sellBelow": config.down_threshold,
-        },
-        "risk": asdict(config),
-        "modelMetrics": model_metrics,
+        "risk": public_risk,
         "backtestMetrics": backtest_metrics,
         "liveExecutionMetrics": live_execution_metrics,
         "forwardHoldoutMetrics": forward_holdout_metrics,
         "backtestYearly": yearly_backtest_metrics,
         "ablation": ablation_metrics,
-        "modelValidation": model_validation,
-        "topFeatures": top_features,
-        "xgboostFeatureGroups": xgboost_feature_groups(importances),
+        "entryModeComparison": entry_mode_comparison,
         "stateMapping": {str(k): v for k, v in state_mapping.items()},
         "sources": sources,
         "dataQuality": data_quality,
@@ -3062,17 +3181,14 @@ def build_outputs(
             "MOVE、Fed funds futures implied rate、GLD 官方持仓和黄金 ETF 官方净流入当前没有稳定免费 point-in-time 接口，已在 sources/dataQuality 标为不可用或 proxy。",
             "GPR 使用 Caldara-Iacoviello 月度地缘政治风险指数，并做月末后 7 天滞后近似。",
             "FOMC 事件来自美联储会议日历，作为事件日和 proximity 特征。",
-            "XGBoost 当前预测的是 triple-barrier meta-label：120 日长期趋势 + CUSUM 候选交易是否先触发止盈。",
-            f"XGBoost 使用 {int(model_metrics.get('feature_count', 0))} 个 {config.xgboost_feature_policy} 可解释状态特征和无类别权重的强正则 stump；HMM 概率不再重复进入模型。",
-            f"正式交易信号仅在验证 AUC >= {config.xgboost_min_validation_auc:.2f}、至少 {config.xgboost_min_validation_buy_signals} 个阈值信号、候选覆盖率 >= {config.xgboost_min_validation_coverage:.0%}、至少 {config.xgboost_min_validation_strategy_trades} 次验证交易动作且 precision lift/recall 达标时使用 XGBoost。",
-            "XGBoost 只允许过滤候选入场，不负责退出；当前策略证据闸门未通过时自动回退到长期趋势 + CUSUM + ATR/HMM 风控。",
+            "正式算法不再训练或读取机器学习分类概率；交易决策完全来自可解释的趋势、CUSUM、ATR 和 walk-forward HMM 规则。",
+            "低于 60/120 日均线、240 日新低、带反转确认以及趋势与低点并集模式均已用冻结验证和严格执行引擎比较，正式策略保留 120 日趋势入场。",
             "训练和验证截止日已经冻结；2026-06-20 之后的新数据作为 forward holdout，不回流到历史参数选择。",
             f"HMM 使用 expanding walk-forward，并约每 {config.hmm_retrain_every_days} 个交易日重训一次，所有状态概率只使用当时可得数据。",
-            f"入场仓位按 ATR 止损距离缩放，使计划初始止损损失不超过组合净值的 {config.max_single_loss:.0%}；隔夜跳空可能使实际损失超过计划值。",
+            f"入场仓位按 ATR 止损距离缩放：普通趋势风险预算 {config.normal_trend_risk_budget:.0%}，120 日收益达到 {config.strong_trend_ret_120_threshold:.0%} 的强趋势预算 {config.strong_trend_risk_budget:.0%}；隔夜跳空可能使实际损失超过计划值。",
             "实盘模拟使用 t 日收盘信号、t+1 日开盘成交、盘中 ATR 障碍、双边交易成本和回撤降仓约束。",
             "网站主回测采用次日开盘事件驱动口径；盘中障碍按障碍价成交，隔夜跳空穿越障碍按开盘价成交。",
             "部分仓位回测使用现金与黄金持仓单位逐日盯市，不假设开盘免费再平衡。",
-            f"{config.prediction_horizon_days} 日窗口仅用于训练标签和防止标签泄漏，不作为真实持仓的强制退出时间。",
             f"HMM 退出需要熊市/恐慌且跌破 60 日均线连续确认 {config.hmm_exit_confirmation_days} 天。",
             "研究结果不构成投资建议。",
         ],
@@ -3090,8 +3206,6 @@ def build_outputs(
         "sma_120",
         "market_state",
         "market_state_code",
-        "p_up_30d",
-        "p_profit_first",
         "position",
         "guide",
         "atr_stop",
@@ -3106,8 +3220,6 @@ def build_outputs(
             "gold_close": "close",
             "market_state": "state",
             "market_state_code": "stateCode",
-            "p_up_30d": "pUp30d",
-            "p_profit_first": "pProfitFirst",
             "atr_stop": "atrStop",
             "tb_take_profit": "takeProfit",
             "tb_event": "event",
@@ -3155,102 +3267,21 @@ def run_pipeline() -> dict[str, Any]:
     state_dummies = pd.get_dummies(features["market_state_code"], prefix="state", dtype=float)
     features = features.join(state_dummies)
 
-    cols = meta_feature_columns(features, config.xgboost_feature_policy)
-    primary_signal = primary_long_signal(features, config.primary_signal_mode)
-    meta_events = make_meta_events(features, primary_signal, config)
-    meta_labels = triple_barrier_labels(features, meta_events, config)
-    model, probabilities, model_metrics, importances = train_triple_barrier_meta_model(
-        features,
-        meta_events,
-        meta_labels,
-        cols,
-        train_end,
-        validation_end,
-        test_mask,
-        config,
-    )
-    model_metrics = apply_xgboost_strategy_gate(
-        features,
-        probabilities,
-        meta_labels,
-        config,
-        validation_mask,
-        model_metrics,
-    )
-    xgboost_enabled = bool(model_metrics.get("xgboost_enabled", False))
-    entry_threshold = float(model_metrics.get("selected_entry_threshold", config.up_threshold))
-    model_validation = build_model_validation_report(
-        features,
-        meta_labels,
-        probabilities,
-        train_end,
-        validation_end,
-        test_mask,
-        config,
-        entry_threshold=entry_threshold,
-    )
+    probabilities = pd.Series(np.nan, index=features.index)
     signals = generate_signals(
-        features,
-        probabilities,
-        config,
-        use_xgboost=xgboost_enabled,
-        use_atr=True,
-        entry_threshold=entry_threshold,
-    )
-    test_start = features.index[test_mask].min()
-    fallback_test_signals = generate_signals(
         features,
         probabilities,
         config,
         use_xgboost=False,
         use_atr=True,
-        start_at=test_start,
     )
-    forced_xgboost_test_signals = generate_signals(
-        features,
-        probabilities,
-        config,
-        use_xgboost=True,
-        use_atr=True,
-        entry_threshold=entry_threshold,
-        start_at=test_start,
-    )
-    _, fallback_test_metrics = backtest_next_open(
-        fallback_test_signals,
-        test_mask,
-        config,
-        cost_bps=5.0,
-        write_log=False,
-    )
-    _, forced_xgboost_test_metrics = backtest_next_open(
-        forced_xgboost_test_signals,
-        test_mask,
-        config,
-        cost_bps=5.0,
-        write_log=False,
-    )
-    model_metrics.update(
-        {
-            "test_contribution_is_diagnostic_only": True,
-            "test_fallback_total_return_5bps": fallback_test_metrics["total_return"],
-            "test_forced_xgboost_total_return_5bps": forced_xgboost_test_metrics["total_return"],
-            "test_xgboost_return_contribution_5bps": (
-                forced_xgboost_test_metrics["total_return"] - fallback_test_metrics["total_return"]
-            ),
-            "test_fallback_sharpe_5bps": fallback_test_metrics["sharpe"],
-            "test_forced_xgboost_sharpe_5bps": forced_xgboost_test_metrics["sharpe"],
-            "test_xgboost_sharpe_contribution_5bps": (
-                forced_xgboost_test_metrics["sharpe"] - fallback_test_metrics["sharpe"]
-            ),
-        }
-    )
+    test_start = features.index[test_mask].min()
     evaluation_signals = generate_signals(
         features,
         probabilities,
         config,
-        use_xgboost=xgboost_enabled,
+        use_xgboost=False,
         use_atr=True,
-        entry_threshold=entry_threshold,
         start_at=test_start,
     )
     _, close_research_metrics = backtest(evaluation_signals, test_mask)
@@ -3297,57 +3328,52 @@ def run_pipeline() -> dict[str, Any]:
     )
     ablation_metrics = run_ablation_experiments(
         features,
-        probabilities,
         config,
         test_mask,
         formal_signals=evaluation_signals,
-        entry_threshold=entry_threshold,
     )
     pd.DataFrame(ablation_metrics).to_csv(LOCAL_LOGS / "gold_ablation.csv", index=False, encoding="utf-8-sig")
     yearly_backtest_metrics = build_yearly_backtest_report(backtest_frame)
     parameter_stability = run_parameter_stability_report(features, config, validation_mask, test_mask)
+    entry_mode_comparison = run_entry_mode_comparison_report(features, config, validation_mask, test_mask)
 
     build_outputs(
         signals,
         backtest_frame,
-        model_metrics,
         backtest_metrics,
         live_execution_metrics,
         forward_holdout_metrics,
         yearly_backtest_metrics,
         ablation_metrics,
-        model_validation,
-        importances,
+        entry_mode_comparison,
         sources,
         state_mapping,
         data_quality,
         config,
     )
 
-    latest = signals.dropna(subset=["gold_close", "p_up_30d"]).iloc[-1]
+    latest = signals.dropna(subset=["gold_close"]).iloc[-1]
     return {
         "as_of": str(latest.name.date()),
         "price": float(latest["gold_close"]),
         "market_state": str(latest["market_state"]),
         "market_state_code": str(latest["market_state_code"]),
-        "p_up_30d": float(latest["p_up_30d"]),
         "guide": str(latest["guide"]),
         "position": float(latest["position"]),
-        "model_metrics": model_metrics,
         "backtest_metrics": backtest_metrics,
         "live_execution_metrics": live_execution_metrics,
         "forward_holdout_metrics": forward_holdout_metrics,
         "backtest_yearly": yearly_backtest_metrics,
         "parameter_stability": parameter_stability,
+        "entry_mode_comparison": entry_mode_comparison,
         "ablation": ablation_metrics,
-        "model_validation": model_validation,
         "outputs": {
             "signals_csv": str(LOCAL_LOGS / "gold_signals.csv"),
             "ablation_csv": str(LOCAL_LOGS / "gold_ablation.csv"),
-            "model_validation_csv": str(LOCAL_LOGS / "gold_model_validation.csv"),
             "live_execution_csv": str(LOCAL_LOGS / "gold_live_execution.csv"),
             "backtest_yearly_csv": str(LOCAL_LOGS / "gold_backtest_yearly.csv"),
             "parameter_stability_csv": str(LOCAL_LOGS / "gold_parameter_stability.csv"),
+            "entry_mode_comparison_csv": str(LOCAL_LOGS / "gold_entry_mode_comparison.csv"),
             "latest_json": str(PUBLIC_DATA / "gold_research_latest.json"),
             "price_json": str(PUBLIC_DATA / "gold_price_series.json"),
             "backtest_json": str(PUBLIC_DATA / "gold_backtest.json"),
@@ -3357,7 +3383,7 @@ def run_pipeline() -> dict[str, Any]:
 
 def main() -> None:
     global OFFLINE_MODE
-    parser = argparse.ArgumentParser(description="Run local gold HMM + XGBoost research pipeline.")
+    parser = argparse.ArgumentParser(description="Run the local gold trend + HMM research pipeline.")
     parser.add_argument("--json", action="store_true", help="Print a JSON summary.")
     parser.add_argument("--offline", action="store_true", help="Use cached market and macro data without network refresh.")
     args = parser.parse_args()
@@ -3368,8 +3394,7 @@ def main() -> None:
     else:
         print(
             f"{summary['as_of']} {summary['market_state_code']}={summary['market_state']} "
-            f"P(profit first)={summary['p_up_30d']:.2%} guide={summary['guide']} "
-            f"position={summary['position']:.1%}"
+            f"guide={summary['guide']} position={summary['position']:.1%}"
         )
 
 

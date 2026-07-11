@@ -10,20 +10,15 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "research"))
 
-from gold_research_pipeline import RiskConfig, backtest_next_open, purged_training_events
+from gold_research_pipeline import RiskConfig, backtest_next_open, primary_long_signal, trend_risk_budget
 
 
-def test_purge_uses_realized_label_exit() -> None:
-    prediction_start = pd.Timestamp("2024-01-10")
-    events = pd.DataFrame(
-        {
-            "tb_label": [1.0, 0.0, 1.0],
-            "tb_exit_date": ["2024-01-09", "2024-01-10", "2024-01-11"],
-        },
-        index=pd.to_datetime(["2023-11-01", "2023-11-02", "2023-11-03"]),
-    )
-    purged = purged_training_events(events, prediction_start)
-    assert list(purged.index) == [pd.Timestamp("2023-11-01")]
+def test_dynamic_trend_risk_budget() -> None:
+    config = RiskConfig()
+    normal = pd.Series({"ret_120": 0.11, "gold_close": 2100.0, "sma_120": 2000.0})
+    strong = pd.Series({"ret_120": 0.12, "gold_close": 2100.0, "sma_120": 2000.0})
+    assert trend_risk_budget(normal, config) == config.normal_trend_risk_budget
+    assert trend_risk_budget(strong, config) == config.strong_trend_risk_budget
 
 
 def test_partial_position_uses_cash_and_units_without_free_rebalancing() -> None:
@@ -48,6 +43,7 @@ def test_partial_position_uses_cash_and_units_without_free_rebalancing() -> None
         max_position=0.5,
         max_leverage=0.5,
         max_single_loss=1.0,
+        dynamic_trend_risk_enabled=False,
         profit_atr_multiple=100.0,
         stop_atr_multiple=100.0,
     )
@@ -62,7 +58,31 @@ def test_partial_position_uses_cash_and_units_without_free_rebalancing() -> None
     assert abs(result.iloc[-1]["position"] - (0.005 * 121 / 1.105)) < 1e-12
 
 
+def test_low_price_modes_are_distinct_from_the_formal_trend() -> None:
+    frame = pd.DataFrame(
+        {
+            "gold_close": [90.0],
+            "sma_20": [85.0],
+            "sma_60": [100.0],
+            "sma_120": [110.0],
+            "ret_5": [0.02],
+            "ret_20": [0.04],
+            "new_low_240": [1.0],
+            "recent_new_low_240": [1.0],
+        },
+        index=[pd.Timestamp("2024-01-01")],
+    )
+    assert not bool(primary_long_signal(frame, "trend_slow").iloc[0])
+    assert bool(primary_long_signal(frame, "below_sma_60").iloc[0])
+    assert bool(primary_long_signal(frame, "below_sma_120").iloc[0])
+    assert bool(primary_long_signal(frame, "dip_recovery_60").iloc[0])
+    assert bool(primary_long_signal(frame, "new_low_240").iloc[0])
+    assert bool(primary_long_signal(frame, "dip_recovery_240").iloc[0])
+    assert bool(primary_long_signal(frame, "trend_or_dip_240").iloc[0])
+
+
 if __name__ == "__main__":
-    test_purge_uses_realized_label_exit()
+    test_dynamic_trend_risk_budget()
     test_partial_position_uses_cash_and_units_without_free_rebalancing()
+    test_low_price_modes_are_distinct_from_the_formal_trend()
     print("strategy engine tests passed")
