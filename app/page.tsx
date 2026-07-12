@@ -229,13 +229,13 @@ function EquityChart() {
     <section className="panel">
       <div className="sectionHead">
         <div>
-          <p className="eyebrow">历史测试 · 严格执行</p>
-          <h2>策略净值 vs 买入持有</h2>
+          <p className="eyebrow">开发历史回测 · 8bps 严格执行</p>
+          <h2>成本后策略净值 vs 买入持有</h2>
         </div>
         <div className="backtestSummary" aria-label="历史测试回测摘要">
           <span>{start.date} 至 {end.date}</span>
           <strong className="backtestStrategy" data-series="strategy">
-            策略 {pct(latest.backtestMetrics.total_return, 1)}
+            策略 {pct(latest.liveExecutionMetrics.total_return, 1)}
           </strong>
           <strong className="backtestBenchmark" data-series="benchmark">
             买入持有 {pct(latest.backtestMetrics.benchmark_return, 1)}
@@ -247,47 +247,9 @@ function EquityChart() {
         <path d={strategyPath} className="equityLine" />
       </svg>
       <div className="legend">
-        <span><i className="legendEquity" />策略</span>
+        <span><i className="legendEquity" />策略（双边 8bps 成本）</span>
         <span><i className="legendBench" />买入持有</span>
-      </div>
-    </section>
-  );
-}
-
-function AblationPanel() {
-  const rows = latest.ablation ?? [];
-  if (!rows.length) return null;
-
-  return (
-    <section className="panel wide">
-      <div className="sectionHead">
-        <div>
-          <p className="eyebrow">策略归因</p>
-          <h2>扩展消融实验</h2>
-        </div>
-        <div className="chartScale">
-          <span>研究收盘口径，仅用于同口径模块归因；正式结果见上方严格执行回测</span>
-        </div>
-      </div>
-      <div className="ablationTable" aria-label="策略消融实验">
-        <div className="ablationRow ablationHead">
-          <span>模块</span>
-          <span>总收益</span>
-          <span>Sharpe</span>
-          <span>最大回撤</span>
-          <span>活跃天数</span>
-        </div>
-        {rows.map((row) => (
-          <div key={row.name} className="ablationRow">
-            <strong>{row.label}</strong>
-            <em className={row.total_return >= latest.backtestMetrics.benchmark_return ? "positive" : "negative"}>
-              {pct(row.total_return, 1)}
-            </em>
-            <em>{num(row.sharpe, 2)}</em>
-            <em className="negative">{pct(row.max_drawdown, 1)}</em>
-            <em>{pct(row.active_day_ratio, 1)}</em>
-          </div>
-        ))}
+        <span>该区间已用于研究，仅视为开发样本</span>
       </div>
     </section>
   );
@@ -354,6 +316,7 @@ export default function Home() {
   const previousPoint = prices[prices.length - 2];
   const oneDay = latestPoint.close / previousPoint.close - 1;
   const signalTone = actionClass(guide);
+  const recommendedPosition = latest.recommendedPosition ?? latest.position;
 
   return (
     <main>
@@ -372,23 +335,29 @@ export default function Home() {
             <h1 className={signalTone}>{guide}</h1>
             <p className="decisionCopy">
               当前 HMM 状态为{latest.marketState}。正式信号由 120 日长期趋势与 CUSUM 事件共同触发，
-              HMM 只负责确认趋势破坏退出。
+              HMM 只负责确认趋势破坏退出。真正前瞻观察自 {latest.forwardHoldoutMetrics.start} 起，
+              当前累计 {latest.forwardHoldoutMetrics.days} 个交易日。
             </p>
             <div className="decisionMeta">
               <span>常态风险 {pct(latest.risk.normal_trend_risk_budget, 0)}</span>
               <span>强趋势风险 {pct(latest.risk.strong_trend_risk_budget, 0)}</span>
-              <span>建议仓位 {pct(latest.position, 1)}</span>
+              <span>已成交仓位 {pct(latest.position, 1)}</span>
+              <span>下一开盘目标 {pct(recommendedPosition, 1)}</span>
             </div>
             <div className="decisionGauges">
-              <Gauge label="建议仓位" value={latest.position * 100} tone={latest.position > 0 ? "buy" : signalTone} />
+              <Gauge
+                label="目标仓位"
+                value={recommendedPosition * 100}
+                tone={recommendedPosition > 0 ? "buy" : signalTone}
+              />
             </div>
           </div>
 
           <div className="snapshot">
             <MetricCard label="黄金价格" value={num(latest.price, 2)} detail={`${latest.asset} · 日变化 ${pct(oneDay, 2)}`} />
             <MetricCard label="ATR 止损线" value={latest.atrStop ? num(latest.atrStop, 2) : "无"} detail={`止盈 ${latest.risk.profit_atr_multiple.toFixed(0)} ATR · 止损 ${latest.risk.stop_atr_multiple.toFixed(0)} ATR`} />
-            <MetricCard label="历史测试 Sharpe" value={num(latest.backtestMetrics.sharpe, 2)} detail={`5bps 净收益 ${pct(latest.backtestMetrics.net_total_return_5bps, 1)}`} />
-            <MetricCard label="最大回撤" value={pct(latest.backtestMetrics.max_drawdown, 1)} detail={`正式策略交易动作 ${latest.backtestMetrics.test_trades}`} />
+            <MetricCard label="开发回测 Sharpe" value={num(latest.liveExecutionMetrics.sharpe, 2)} detail={`8bps 净收益 ${pct(latest.liveExecutionMetrics.total_return, 1)}`} />
+            <MetricCard label="最大回撤" value={pct(latest.liveExecutionMetrics.max_drawdown, 1)} detail={`正式策略交易动作 ${latest.liveExecutionMetrics.test_trades}`} />
           </div>
         </div>
       </section>
@@ -397,7 +366,6 @@ export default function Home() {
         <PriceChart />
         <StateTape />
         <EquityChart />
-        <AblationPanel />
 
         <section className="panel">
           <div className="sectionHead">
@@ -425,6 +393,7 @@ export default function Home() {
             <span>常态风险预算 {pct(latest.risk.normal_trend_risk_budget, 0)}</span>
             <span>强趋势风险预算 {pct(latest.risk.strong_trend_risk_budget, 0)}</span>
             <span>最大杠杆 {latest.risk.max_leverage.toFixed(1)}x</span>
+            <span>现金利率折减 {latest.risk.cash_yield_haircut_bps.toFixed(0)}bps</span>
             <span>止盈 {latest.risk.profit_atr_multiple.toFixed(0)} ATR</span>
             <span>止损 {latest.risk.stop_atr_multiple.toFixed(0)} ATR</span>
             <span>HMM 退出确认 {latest.risk.hmm_exit_confirmation_days} 天</span>
@@ -447,11 +416,12 @@ export default function Home() {
             </p>
             <p>
               黄金价格采用 {latest.asset}；VIX、实际利率和 ETF 资金流中存在 proxy 因子，
-              回测结果受数据源、交易成本、滑点和参数设定影响。
+              未投资现金利率也只是三个月美债收益率的保守 proxy。回测结果受数据源、
+              交易成本、滑点和参数设定影响。
             </p>
             <p>
               任何真实交易都需要结合账户风险承受能力、流动性、保证金规则和独立判断。
-              使用者需自行承担投资风险。
+              2023 年后的历史已经被多轮研究查看，不是独立样本外证据；使用者需自行承担投资风险。
             </p>
           </div>
         </section>

@@ -23,31 +23,36 @@ def compact(text: str, limit: int = 180) -> str:
     return value if len(value) <= limit else f"{value[:limit].rstrip()}..."
 
 
-def curl_text(url: str, timeout: int = 10) -> tuple[bool, str, str, float]:
+def curl_text(
+    url: str,
+    timeout: int = 10,
+    *,
+    browser_headers: bool = True,
+) -> tuple[bool, str, str, float]:
     start = time.time()
+    command = [
+        "curl",
+        "-L",
+        "--silent",
+        "--show-error",
+        "--fail",
+        "--max-time",
+        str(timeout),
+    ]
+    if browser_headers:
+        command.extend(
+            [
+                "-H",
+                f"User-Agent: {USER_AGENT}",
+                "-H",
+                "Accept: application/json,text/csv,text/plain,*/*",
+                "-H",
+                "Accept-Language: zh-CN,zh;q=0.9,en;q=0.8",
+            ]
+        )
+    command.append(url)
     result = subprocess.run(
-        [
-            "curl",
-            "-q",
-            "-k",
-            "-L",
-            "--silent",
-            "--show-error",
-            "--fail",
-            "--compressed",
-            "--http1.1",
-            "--max-time",
-            str(timeout),
-            "--noproxy",
-            "*",
-            "-H",
-            f"User-Agent: {USER_AGENT}",
-            "-H",
-            "Accept: application/json,text/csv,text/plain,*/*",
-            "-H",
-            "Accept-Language: zh-CN,zh;q=0.9,en;q=0.8",
-            url,
-        ],
+        command,
         text=True,
         capture_output=True,
     )
@@ -62,18 +67,12 @@ def curl_bytes(url: str, timeout: int = 15) -> tuple[bool, bytes, str, float]:
     result = subprocess.run(
         [
             "curl",
-            "-q",
-            "-k",
             "-L",
             "--silent",
             "--show-error",
             "--fail",
-            "--compressed",
-            "--http1.1",
             "--max-time",
             str(timeout),
-            "--noproxy",
-            "*",
             "-H",
             f"User-Agent: {USER_AGENT}",
             "-H",
@@ -169,11 +168,22 @@ def probe() -> list[dict[str, object]]:
             "name": "fred_us10y_dgs10",
             "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS10",
             "parser": lambda text: parse_csv(text, "DGS10"),
+            "timeout": 20,
+            "plain": True,
         },
         {
             "name": "fred_tips_dfii10",
             "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DFII10",
             "parser": lambda text: parse_csv(text, "DFII10"),
+            "timeout": 20,
+            "plain": True,
+        },
+        {
+            "name": "fred_cash_yield_dgs3mo",
+            "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS3MO",
+            "parser": lambda text: parse_csv(text, "DGS3MO"),
+            "timeout": 20,
+            "plain": True,
         },
         {
             "name": "cboe_vix_history",
@@ -199,7 +209,11 @@ def probe() -> list[dict[str, object]]:
         if item.get("binary"):
             ok, payload, error, elapsed = curl_bytes(item["url"], timeout=int(item.get("timeout", 15)))
         else:
-            ok, text, error, elapsed = curl_text(item["url"], timeout=int(item.get("timeout", 10)))
+            ok, text, error, elapsed = curl_text(
+                item["url"],
+                timeout=int(item.get("timeout", 10)),
+                browser_headers=not bool(item.get("plain", False)),
+            )
             payload = text
         parsed = {"rows": 0, "last": None}
         parse_error = ""
