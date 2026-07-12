@@ -1,0 +1,8 @@
+{
+  "strategyVersion": "2026-07-13-v1",
+  "executionEngineVersion": "strict-next-open-v2",
+  "configFingerprint": "6c6b06b79a97cdc3c4a56a49bb7cc6e2fc0e61de404f04414d34c84919701cae",
+  "start": "2026-07-13",
+  "appendOnly": true,
+  "records": []
+}

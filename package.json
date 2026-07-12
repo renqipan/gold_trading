@@ -10,6 +10,7 @@
     "check:data": "node scripts/check-site-data.mjs",
     "test:sources": ".venv-research/bin/python scripts/test_data_sources.py",
     "test:strategy": ".venv-research/bin/python scripts/test_strategy_engine.py",
+    "research:candidates": ".venv-research/bin/python scripts/evaluate_strategy_candidates.py",
     "update:data": ".venv-research/bin/python research/gold_research_pipeline.py --json",
     "update:site": "npm run update:data && npm run check:data && npm run build",
     "verify": "npm run test:strategy && npm run check:data && npm run lint && npm run build"

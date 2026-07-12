@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -40,7 +41,11 @@ PUBLIC_DATA = ROOT / "public" / "data"
 LOCAL_LOGS = ROOT / "local_logs"
 RAW_DATA = ROOT / "data" / "raw"
 MARKET_SOURCE_METADATA = RAW_DATA / "market_source_metadata.json"
+FORWARD_LEDGER = PUBLIC_DATA / "gold_forward_ledger.json"
 OFFLINE_MODE = False
+
+FORMAL_STRATEGY_VERSION = "2026-07-13-v1"
+EXECUTION_ENGINE_VERSION = "strict-next-open-v2"
 
 EASTMONEY_KLINE = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
 EASTMONEY_SEARCH = "https://searchapi.eastmoney.com/api/suggest/get"
@@ -57,12 +62,13 @@ REQUEST_USER_AGENTS = [
 class RiskConfig:
     train_end_date: str = "2021-02-23"
     validation_end_date: str = "2023-02-27"
-    forward_holdout_start_date: str = "2026-06-20"
+    forward_holdout_start_date: str = "2026-07-13"
     prediction_horizon_days: int = 60
     up_threshold: float = 0.075
     down_threshold: float = 0.36
     max_position: float = 1.0
     max_leverage: float = 1.0
+    long_only: bool = True
     max_single_loss: float = 0.14
     dynamic_trend_risk_enabled: bool = True
     normal_trend_risk_budget: float = 0.10
@@ -70,16 +76,22 @@ class RiskConfig:
     strong_trend_ret_120_threshold: float = 0.12
     max_drawdown_soft: float = 0.18
     max_drawdown_hard: float = 0.30
+    hard_drawdown_cooldown_days: int = 63
     atr_window: int = 14
     retrain_every_days: int = 21
     meta_event_gap_days: int = 5
     meta_event_kind: str = "cusum_abs"
     cusum_threshold_mult: float = 0.8
     primary_signal_mode: str = "trend_slow"
+    hmm_feature_policy: str = "gold_core"
     hmm_retrain_every_days: int = 252
     hmm_exit_confirmation_days: int = 20
     profit_atr_multiple: float = 10.0
     stop_atr_multiple: float = 6.0
+    atr_stop_enabled: bool = True
+    atr_profit_enabled: bool = True
+    hmm_exit_enabled: bool = True
+    trend_exit_enabled: bool = False
     xgboost_min_validation_auc: float = 0.52
     xgboost_min_validation_buy_signals: int = 15
     xgboost_min_validation_precision: float = 0.20
@@ -93,8 +105,20 @@ class RiskConfig:
     xgboost_entry_thresholds: tuple[float, ...] = (0.05, 0.075, 0.10, 0.125, 0.15, 0.20, 0.25)
     xgboost_use_model_exit: bool = False
     realistic_cost_bps: float = 8.0
+    cash_yield_enabled: bool = True
+    cash_yield_haircut_bps: float = 50.0
     live_soft_drawdown_position: float = 0.5
     live_hard_drawdown_position: float = 0.0
+
+    def __post_init__(self) -> None:
+        if not self.long_only:
+            raise ValueError("The formal gold strategy is long-only")
+        if not 0 < self.max_position <= 1.0:
+            raise ValueError("max_position must be in (0, 1] for an unlevered strategy")
+        if not 0 < self.max_leverage <= 1.0:
+            raise ValueError("max_leverage must be in (0, 1] for an unlevered strategy")
+        if self.cash_yield_haircut_bps < 0:
+            raise ValueError("cash_yield_haircut_bps must be non-negative")
 
 
 STATE_TO_CODE = {
@@ -674,6 +698,8 @@ def apply_monthly_release_lag(frame: pd.DataFrame, days_after_month_end: int = 7
 
 
 def fetch_fred_series(series_id: str, column_name: str) -> pd.DataFrame:
+    if OFFLINE_MODE:
+        raise RuntimeError(f"offline mode: use cached FRED {series_id}")
     url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
     text = request_text(url, timeout=8, attempts=1)
     frame = pd.read_csv(StringIO(text))
@@ -929,6 +955,23 @@ def load_market_data() -> tuple[pd.DataFrame, dict[str, str]]:
             print("[warn] tips real yield unavailable; falling back to CPI-adjusted proxy")
 
     try:
+        cash_yield = fetch_fred_series("DGS3MO", "cash_yield_pct")
+        cash_yield.to_csv(RAW_DATA / "dgs3mo_cash_yield.csv")
+        sources["cash_yield"] = "FRED DGS3MO 3-month Treasury secondary-market yield"
+        series.append(cash_yield)
+    except Exception as exc:
+        cash_yield = load_cached_csv(RAW_DATA / "dgs3mo_cash_yield.csv")
+        if len(cash_yield):
+            sources["cash_yield"] = (
+                "FRED DGS3MO 3-month Treasury secondary-market yield "
+                "(cached fallback after refresh failure)"
+            )
+            series.append(cash_yield)
+        else:
+            sources["cash_yield"] = f"unavailable: {compact_error(str(exc))}"
+            print("[warn] cash yield unavailable; cash earns zero in the backtest")
+
+    try:
         vix = fetch_cboe_vix_history()
         vix.to_csv(RAW_DATA / "vix_cboe.csv")
         sources["vix"] = "Cboe official VIX historical index CSV"
@@ -972,12 +1015,42 @@ def load_market_data() -> tuple[pd.DataFrame, dict[str, str]]:
             sources["fomc"] = f"unavailable: {compact_error(str(exc))}"
             print("[warn] FOMC calendar unavailable")
 
-    data = pd.concat(series, axis=1).sort_index()
+    data = pd.concat(series, axis=1).sort_index().replace([np.inf, -np.inf], np.nan)
     gold_index = data.loc[data["gold_close"].notna()].index
-    data = data.reindex(gold_index)
-    data = data.replace([np.inf, -np.inf], np.nan)
-    event_frame = data[[column for column in event_columns if column in data]].fillna(0.0)
-    data = data.drop(columns=[column for column in event_columns if column in data], errors="ignore").ffill()
+    raw_last_observed = {
+        column: str(data[column].dropna().index.max().date())
+        for column in data.columns
+        if data[column].notna().any()
+    }
+    existing_event_columns = [column for column in event_columns if column in data]
+    event_source = data[existing_event_columns].fillna(0.0)
+    event_frame = pd.DataFrame(0.0, index=gold_index, columns=existing_event_columns)
+    for column in existing_event_columns:
+        releases = event_source.loc[event_source[column] != 0, column]
+        for release_date, value in releases.items():
+            target_pos = int(gold_index.searchsorted(release_date, side="left"))
+            if target_pos < len(gold_index):
+                target_date = gold_index[target_pos]
+                event_frame.loc[target_date, column] = max(
+                    float(event_frame.loc[target_date, column]),
+                    float(value),
+                )
+    non_fill_columns = [
+        column
+        for column in data.columns
+        if (
+            column.endswith(("_volume", "_amount"))
+            or column in {"gold_open", "gold_high", "gold_low"}
+        )
+        and column not in event_columns
+    ]
+    non_fill_frame = data[non_fill_columns].reindex(gold_index)
+    data = data.drop(
+        columns=existing_event_columns + non_fill_columns,
+        errors="ignore",
+    ).ffill().reindex(gold_index)
+    if non_fill_columns:
+        data = data.join(non_fill_frame)
     if len(event_frame.columns):
         data = data.join(event_frame)
 
@@ -997,6 +1070,8 @@ def load_market_data() -> tuple[pd.DataFrame, dict[str, str]]:
     sources["fed_funds_futures"] = "unavailable: Yahoo/CME futures endpoints blocked or not point-in-time stable in current environment"
     sources["gld_holdings"] = "unavailable: SPDR public endpoint currently exposes bar-list PDF, not a stable daily holdings CSV"
     sources["gold_etf_net_flow"] = "proxy only: GLD signed dollar volume flow from traded price and amount; not official ETF creations/redemptions"
+
+    data.attrs["raw_last_observed"] = raw_last_observed
 
     return data, sources
 
@@ -1037,6 +1112,7 @@ def verify_data_quality(data: pd.DataFrame, sources: dict[str, str]) -> dict[str
         "core_cpi_mom": ["core_cpi_mom_surprise"],
         "nfp": ["nfp_surprise"],
         "tips_real_yield": ["tips_10y_real_yield"],
+        "cash_yield": ["cash_yield_pct"],
         "real_rate_proxy": ["real_rate_proxy"],
         "real_rate": ["real_rate"],
         "gpr": ["gpr_index", "gpr_threats", "gpr_acts"],
@@ -1059,13 +1135,57 @@ def verify_data_quality(data: pd.DataFrame, sources: dict[str, str]) -> dict[str
             "missingRows": int(data[available_columns].isna().all(axis=1).sum()),
         }
 
+    latest_date = data.index.max()
+    reference_date = max(latest_date.normalize(), pd.Timestamp.now().normalize())
+    raw_last_observed = data.attrs.get("raw_last_observed", {})
+    staleness_limits = {
+        "gold_close": 7,
+        "dxy_close": 7,
+        "gld_close": 7,
+        "vix_close": 7,
+        "tips_10y_real_yield": 10,
+        "cash_yield_pct": 10,
+        "cot_gold_net": 14,
+        "cftc_mm_gold_net": 14,
+        "cpi_mom_surprise": 62,
+        "core_cpi_mom_surprise": 62,
+        "nfp_surprise": 62,
+        "gpr_index": 62,
+    }
+    raw_availability: dict[str, Any] = {}
+    stale_warnings: list[str] = []
+    for column, max_age_days in staleness_limits.items():
+        last_text = raw_last_observed.get(column)
+        if not last_text:
+            continue
+        last_date = pd.Timestamp(last_text)
+        age_days = int((reference_date - last_date).days)
+        stale = age_days > max_age_days
+        raw_availability[column] = {
+            "lastObserved": last_text,
+            "ageDays": age_days,
+            "maxAgeDays": max_age_days,
+            "stale": stale,
+        }
+        if stale:
+            stale_warnings.append(f"{column} stale by {age_days} days")
+
+    ohlc_passed = all(
+        (not item.get("available", False)) or item.get("invalidOhlcRows", 0) == 0
+        for item in checks.values()
+    )
+    critical_columns = ["gold_close", "cash_yield_pct"]
+    critical_stale = any(
+        column not in raw_availability or bool(raw_availability[column].get("stale", False))
+        for column in critical_columns
+    )
     quality = {
         "generatedAt": pd.Timestamp.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "passed": all(
-            (not item.get("available", False)) or item.get("invalidOhlcRows", 0) == 0
-            for item in checks.values()
-        ),
+        "referenceDate": str(reference_date.date()),
+        "passed": bool(ohlc_passed and not critical_stale),
         "checks": checks,
+        "rawAvailability": raw_availability,
+        "staleWarnings": stale_warnings,
     }
     (LOCAL_LOGS / "data_quality_report.json").write_text(
         json.dumps(quality, ensure_ascii=False, indent=2),
@@ -1271,7 +1391,21 @@ def build_features(data: pd.DataFrame, config: RiskConfig) -> pd.DataFrame:
         frame["vix_gold_vol_spread_z60"] = rolling_zscore(frame["vix_close"] / 100 - frame["vol_20"], 60)
 
     if "gld_close" in frame and ("gld_amount" in frame or "gld_volume" in frame):
-        dollar_volume = frame["gld_amount"] if "gld_amount" in frame else frame["gld_close"] * frame["gld_volume"]
+        volume_dollar_proxy = (
+            (frame["gld_close"] * frame["gld_volume"]).where(
+                np.isfinite(frame["gld_volume"]) & (frame["gld_volume"] > 0)
+            )
+            if "gld_volume" in frame
+            else pd.Series(np.nan, index=frame.index)
+        )
+        dollar_volume = (
+            frame["gld_amount"].where(
+                np.isfinite(frame["gld_amount"]) & (frame["gld_amount"] > 0),
+                volume_dollar_proxy,
+            )
+            if "gld_amount" in frame
+            else volume_dollar_proxy
+        )
         signed_flow = np.sign(frame["gld_close"].pct_change()).fillna(0) * dollar_volume
         normalizer = dollar_volume.rolling(60).median().replace(0, np.nan)
         frame["gld_flow_proxy_20"] = signed_flow.rolling(20).sum() / normalizer
@@ -1622,8 +1756,19 @@ def meta_feature_columns(frame: pd.DataFrame, policy: str = "stable_no_macro") -
     return [column for column in compact_candidates if column in stable]
 
 
-def hmm_feature_columns(frame: pd.DataFrame) -> list[str]:
-    candidates = [
+def hmm_feature_columns(frame: pd.DataFrame, policy: str = "gold_core") -> list[str]:
+    gold_core = [
+        "ret_20",
+        "vol_20",
+        "sma_gap_60",
+        "drawdown_120",
+    ]
+    market_core = gold_core + [
+        "dxy_ret_20",
+        "real_rate_change_20",
+        "vix_ret_20",
+    ]
+    all_candidates = [
         "ret_5",
         "ret_20",
         "vol_20",
@@ -1647,13 +1792,25 @@ def hmm_feature_columns(frame: pd.DataFrame) -> list[str]:
         "nfp_surprise_z252",
         "gpr_index_z60",
     ]
-    return [column for column in candidates if column in frame.columns]
+    policies = {
+        "gold_core": gold_core,
+        "market_core": market_core,
+        "all_available": all_candidates,
+    }
+    if policy not in policies:
+        raise ValueError(f"unknown HMM feature policy: {policy}")
+    return [column for column in policies[policy] if column in frame.columns]
 
 
-def fit_hmm(frame: pd.DataFrame, train_mask: pd.Series) -> tuple[Pipeline, dict[int, str], pd.DataFrame]:
-    cols = [
+def fit_hmm(
+    frame: pd.DataFrame,
+    train_mask: pd.Series,
+    feature_cols: list[str] | None = None,
+    feature_policy: str = "gold_core",
+) -> tuple[Pipeline, dict[int, str], pd.DataFrame]:
+    cols = feature_cols or [
         column
-        for column in hmm_feature_columns(frame)
+        for column in hmm_feature_columns(frame, feature_policy)
         if frame.loc[train_mask, column].notna().sum() >= 300
     ]
     if len(cols) < 4:
@@ -1717,8 +1874,9 @@ def fit_hmm(frame: pd.DataFrame, train_mask: pd.Series) -> tuple[Pipeline, dict[
     state_stats = []
     temp = frame.copy()
     temp["hmm_raw_state"] = hidden
+    usable_train_mask = train_mask & hmm_frame.notna().all(axis=1)
     for state in range(4):
-        subset = temp.loc[train_mask & (temp["hmm_raw_state"] == state)]
+        subset = temp.loc[usable_train_mask & (temp["hmm_raw_state"] == state)]
         if "vix_ret_20" in subset:
             risk_series = subset["vix_ret_20"]
         else:
@@ -1765,10 +1923,53 @@ def fit_hmm_walk_forward(
     frame: pd.DataFrame,
     initial_train_end: pd.Timestamp,
     retrain_every_days: int,
+    feature_policy: str = "gold_core",
 ) -> tuple[Pipeline, dict[int, str], pd.DataFrame]:
     """Generate HMM states using only information available before each prediction block."""
     initial_mask = pd.Series(frame.index <= initial_train_end, index=frame.index)
-    latest_pipe, latest_mapping, initial_states = fit_hmm(frame, initial_mask)
+    fixed_feature_cols = [
+        column
+        for column in hmm_feature_columns(frame, feature_policy)
+        if frame.loc[initial_mask, column].notna().sum() >= 300
+    ]
+    latest_pipe, latest_mapping, initial_states = fit_hmm(
+        frame,
+        initial_mask,
+        fixed_feature_cols,
+        feature_policy,
+    )
+    diagnostics: list[dict[str, Any]] = []
+
+    def record_diagnostic(
+        cutoff: pd.Timestamp,
+        pipe: Pipeline,
+        mapping: dict[int, str],
+        states: pd.DataFrame,
+        mask: pd.Series,
+    ) -> None:
+        usable_index = frame.loc[mask, fixed_feature_cols].dropna().index
+        occupancy = states.loc[usable_index, "market_state"].value_counts(normalize=True)
+        hmm_model = pipe.named_steps["hmm"]
+        diagnostics.append(
+            {
+                "cutoff": str(cutoff.date()),
+                "feature_policy": feature_policy,
+                "feature_count": len(fixed_feature_cols),
+                "features": "|".join(fixed_feature_cols),
+                "train_rows": int(len(usable_index)),
+                "train_start": str(usable_index.min().date()) if len(usable_index) else None,
+                "train_end": str(usable_index.max().date()) if len(usable_index) else None,
+                "converged": bool(hmm_model.monitor_.converged),
+                "bull_occupancy": float(occupancy.get("牛市", 0.0)),
+                "bear_occupancy": float(occupancy.get("熊市", 0.0)),
+                "range_occupancy": float(occupancy.get("震荡", 0.0)),
+                "panic_occupancy": float(occupancy.get("恐慌", 0.0)),
+                "state_mapping": json.dumps(mapping, ensure_ascii=False, sort_keys=True),
+                "transition_matrix": json.dumps(hmm_model.transmat_.round(8).tolist()),
+            }
+        )
+
+    record_diagnostic(initial_train_end, latest_pipe, latest_mapping, initial_states, initial_mask)
     state_columns = list(initial_states.columns)
     result = initial_states.copy()
     result.loc[frame.index > initial_train_end, state_columns] = np.nan
@@ -1777,12 +1978,23 @@ def fit_hmm_walk_forward(
     for pred_start in range(start_pos, len(frame.index), retrain_every_days):
         pred_end = min(pred_start + retrain_every_days, len(frame.index))
         cutoff = frame.index[pred_start - 1]
-        expanding_mask = pd.Series(frame.index <= cutoff, index=frame.index)
-        latest_pipe, latest_mapping, candidate_states = fit_hmm(frame, expanding_mask)
+        if pred_start == start_pos:
+            candidate_states = initial_states
+        else:
+            expanding_mask = pd.Series(frame.index <= cutoff, index=frame.index)
+            latest_pipe, latest_mapping, candidate_states = fit_hmm(
+                frame,
+                expanding_mask,
+                fixed_feature_cols,
+                feature_policy,
+            )
+            record_diagnostic(cutoff, latest_pipe, latest_mapping, candidate_states, expanding_mask)
         block_index = frame.index[pred_start:pred_end]
         result.loc[block_index, state_columns] = candidate_states.loc[block_index, state_columns]
 
     result["hmm_raw_state"] = pd.to_numeric(result["hmm_raw_state"], errors="coerce").astype("Int64")
+    result.attrs["hmm_diagnostics"] = diagnostics
+    result.attrs["hmm_feature_columns"] = fixed_feature_cols
     return latest_pipe, latest_mapping, result
 
 
@@ -1794,6 +2006,13 @@ def primary_long_signal(frame: pd.DataFrame, mode: str = "trend_slow") -> pd.Ser
         )
     if mode == "below_sma_60":
         return frame["gold_close"] < frame["sma_60"]
+    if mode == "tsmom_ensemble":
+        positive_horizons = (
+            (frame["ret_60"] > 0).astype(int)
+            + (frame["ret_120"] > 0).astype(int)
+            + (frame["ret_252"] > 0).astype(int)
+        )
+        return positive_horizons >= 2
     if mode == "below_sma_120":
         return frame["gold_close"] < frame["sma_120"]
     if mode == "dip_recovery_60":
@@ -1843,7 +2062,15 @@ def make_repeated_events(signal: pd.Series, min_gap: int) -> pd.Series:
     return events
 
 
-def make_cusum_events(frame: pd.DataFrame, signal: pd.Series, threshold_mult: float, min_gap: int) -> pd.Series:
+def make_cusum_events(
+    frame: pd.DataFrame,
+    signal: pd.Series,
+    threshold_mult: float,
+    min_gap: int,
+    direction: str = "abs",
+) -> pd.Series:
+    if direction not in {"abs", "positive", "negative"}:
+        raise ValueError(f"unknown CUSUM direction: {direction}")
     returns = frame["gold_close"].pct_change().fillna(0)
     daily_vol = returns.ewm(span=50, adjust=False).std().replace(0, np.nan).ffill()
     events = pd.Series(False, index=frame.index)
@@ -1859,7 +2086,14 @@ def make_cusum_events(frame: pd.DataFrame, signal: pd.Series, threshold_mult: fl
         threshold = float(threshold_mult * daily_vol.loc[date])
         s_pos = max(0.0, s_pos + ret)
         s_neg = min(0.0, s_neg + ret)
-        if (s_pos > threshold or abs(s_neg) > threshold) and pos - last_pos >= min_gap:
+        positive_event = s_pos > threshold
+        negative_event = abs(s_neg) > threshold
+        selected_event = (
+            (positive_event or negative_event)
+            if direction == "abs"
+            else positive_event if direction == "positive" else negative_event
+        )
+        if selected_event and pos - last_pos >= min_gap:
             events.iloc[pos] = True
             last_pos = pos
             s_pos = 0.0
@@ -1871,7 +2105,29 @@ def make_meta_events(frame: pd.DataFrame, signal: pd.Series, config: RiskConfig)
     if config.meta_event_kind == "repeated":
         return make_repeated_events(signal, config.meta_event_gap_days)
     if config.meta_event_kind == "cusum_abs":
-        return make_cusum_events(frame, signal, config.cusum_threshold_mult, config.meta_event_gap_days)
+        return make_cusum_events(
+            frame,
+            signal,
+            config.cusum_threshold_mult,
+            config.meta_event_gap_days,
+            direction="abs",
+        )
+    if config.meta_event_kind == "cusum_positive":
+        return make_cusum_events(
+            frame,
+            signal,
+            config.cusum_threshold_mult,
+            config.meta_event_gap_days,
+            direction="positive",
+        )
+    if config.meta_event_kind == "cusum_negative":
+        return make_cusum_events(
+            frame,
+            signal,
+            config.cusum_threshold_mult,
+            config.meta_event_gap_days,
+            direction="negative",
+        )
     raise ValueError(f"unknown meta event kind: {config.meta_event_kind}")
 
 
@@ -2255,12 +2511,18 @@ def generate_signals(
     primary_mode: str | None = None,
     entry_threshold: float | None = None,
     start_at: pd.Timestamp | None = None,
+    use_hmm_exit: bool | None = None,
+    use_trend_exit: bool | None = None,
 ) -> pd.DataFrame:
     signal_frame = frame.copy()
     primary_signal = primary_long_signal(signal_frame, primary_mode or config.primary_signal_mode)
     events = make_meta_events(signal_frame, primary_signal, config)
     threshold = config.up_threshold if entry_threshold is None else float(entry_threshold)
     accepted_events = events & (probabilities >= threshold) if use_xgboost else events
+    atr_stop_enabled = bool(use_atr and config.atr_stop_enabled)
+    atr_profit_enabled = bool(use_atr and config.atr_profit_enabled)
+    hmm_exit_enabled = config.hmm_exit_enabled if use_hmm_exit is None else bool(use_hmm_exit)
+    trend_exit_enabled = config.trend_exit_enabled if use_trend_exit is None else bool(use_trend_exit)
     signal_frame["p_profit_first_event"] = probabilities
     signal_frame["p_profit_first"] = probabilities.ffill()
     signal_frame["p_up_30d"] = signal_frame["p_profit_first"]
@@ -2269,6 +2531,11 @@ def generate_signals(
     signal_frame["primary_trend_signal"] = primary_signal
     signal_frame["xgboost_used_for_signal"] = bool(use_xgboost)
     signal_frame["atr_risk_used_for_signal"] = bool(use_atr)
+    signal_frame["atr_stop_enabled"] = atr_stop_enabled
+    signal_frame["atr_profit_enabled"] = atr_profit_enabled
+    signal_frame["hmm_exit_enabled"] = hmm_exit_enabled
+    signal_frame["trend_exit_enabled"] = trend_exit_enabled
+    signal_frame["target_position_override"] = np.nan
     signal_frame["payoff_ratio"] = config.profit_atr_multiple / config.stop_atr_multiple
     signal_frame["historical_train_win_rate"] = np.nan
     strong_trend = (
@@ -2325,8 +2592,8 @@ def generate_signals(
             continue
 
         if in_position:
-            hit_profit = use_atr and np.isfinite(take_profit_price) and high >= take_profit_price
-            hit_stop = use_atr and np.isfinite(stop_price) and low <= stop_price
+            hit_profit = atr_profit_enabled and np.isfinite(take_profit_price) and high >= take_profit_price
+            hit_stop = atr_stop_enabled and np.isfinite(stop_price) and low <= stop_price
             model_exit = (
                 use_xgboost
                 and config.xgboost_use_model_exit
@@ -2339,8 +2606,9 @@ def generate_signals(
                 and close < row.sma_60
             )
             hmm_exit_streak = hmm_exit_streak + 1 if hmm_exit_setup else 0
-            hmm_exit = hmm_exit_streak >= config.hmm_exit_confirmation_days
-            if hit_stop or hit_profit or model_exit or hmm_exit:
+            hmm_exit = hmm_exit_enabled and hmm_exit_streak >= config.hmm_exit_confirmation_days
+            trend_exit = trend_exit_enabled and not bool(row.primary_trend_signal)
+            if hit_stop or hit_profit or model_exit or hmm_exit or trend_exit:
                 if hit_stop:
                     fill_price = min(float(row.gold_open), stop_price) if np.isfinite(row.gold_open) else stop_price
                 elif hit_profit:
@@ -2362,8 +2630,10 @@ def generate_signals(
                     exit_reason = "atr_take_profit"
                 elif model_exit:
                     exit_reason = "xgboost_down_threshold"
-                else:
+                elif hmm_exit:
                     exit_reason = "hmm_trend_exit"
+                else:
+                    exit_reason = "primary_trend_exit"
             else:
                 action = "持有"
                 guide = "持有"
@@ -2373,8 +2643,8 @@ def generate_signals(
             current_position = risk_position_size(close, atr, config, trend_risk_budget(row, config))
             entry = close
             fill_price = entry
-            stop_price = entry - config.stop_atr_multiple * atr
-            take_profit_price = entry + config.profit_atr_multiple * atr
+            stop_price = entry - config.stop_atr_multiple * atr if atr_stop_enabled else np.nan
+            take_profit_price = entry + config.profit_atr_multiple * atr if atr_profit_enabled else np.nan
             hmm_exit_streak = 0
             action = "买入"
             raw_signal = "long"
@@ -2617,32 +2887,83 @@ def backtest_next_open(
     write_log: bool = True,
 ) -> tuple[pd.DataFrame, dict[str, float]]:
     bt = signal_frame.loc[test_mask].copy()
-    if "gold_open" not in bt or bt["gold_open"].isna().all():
-        return backtest(signal_frame, test_mask)
+    required_ohlc = ["gold_open", "gold_high", "gold_low", "gold_close"]
+    missing_ohlc = [column for column in required_ohlc if column not in bt]
+    if missing_ohlc:
+        raise RuntimeError(f"Strict next-open backtest requires OHLC columns: {missing_ohlc}")
+    if config.cash_yield_enabled and (
+        "cash_yield_pct" not in bt or bt["cash_yield_pct"].notna().sum() < 2
+    ):
+        raise RuntimeError("Cash-yield-enabled backtest requires point-in-time cash_yield_pct data")
+    for column in required_ohlc:
+        invalid_price = ~np.isfinite(bt[column]) | (bt[column] <= 0)
+        if invalid_price.any():
+            bad_dates = ", ".join(str(date.date()) for date in bt.index[invalid_price][:5])
+            label = "opening prices" if column == "gold_open" else f"{column} prices"
+            raise RuntimeError(
+                f"Strict next-open backtest requires valid {label}; invalid dates: {bad_dates}"
+            )
+    invalid_range = (
+        (bt["gold_high"] < bt[["gold_open", "gold_close", "gold_low"]].max(axis=1))
+        | (bt["gold_low"] > bt[["gold_open", "gold_close", "gold_high"]].min(axis=1))
+    )
+    if invalid_range.any():
+        bad_dates = ", ".join(str(date.date()) for date in bt.index[invalid_range][:5])
+        raise RuntimeError(f"Strict next-open backtest requires internally valid OHLC ranges: {bad_dates}")
 
     bt["benchmark_ret"] = bt["gold_close"].pct_change().fillna(0)
     equity = 1.0
     peak = 1.0
+    risk_peak = 1.0
     cash = 1.0
+    cash_interest_earned = 0.0
+    previous_date: pd.Timestamp | None = None
+    previous_cash_yield_pct = np.nan
     units = 0.0
     stop_price = np.nan
     take_profit_price = np.nan
+    entry_price = np.nan
+    entry_target_fraction = 0.0
     pending_entry_atr = np.nan
     pending_entry_risk_budget = config.max_single_loss
+    pending_entry_target_override = np.nan
     pending_entry = False
     pending_exit = False
+    pending_exit_reason = ""
     hmm_exit_streak = 0
+    hard_drawdown_cooldown = 0
     rows: list[dict[str, Any]] = []
     trading_cost_bps = config.realistic_cost_bps if cost_bps is None else float(cost_bps)
 
     for date, row in bt.iterrows():
         open_price = float(row["gold_open"])
         close_price = float(row["gold_close"])
-        if not np.isfinite(open_price) or open_price <= 0:
-            open_price = close_price
         equity_before = equity
+        cash_interest = 0.0
+        risk_free_return = 0.0
+        applied_cash_yield_pct = np.nan
+        if (
+            previous_date is not None
+            and np.isfinite(previous_cash_yield_pct)
+        ):
+            calendar_days = max(int((pd.Timestamp(date) - previous_date).days), 0)
+            applied_cash_yield_pct = max(
+                float(previous_cash_yield_pct) - config.cash_yield_haircut_bps / 100.0,
+                0.0,
+            )
+            if calendar_days > 0 and applied_cash_yield_pct > 0:
+                risk_free_return = (
+                    (1.0 + applied_cash_yield_pct / 100.0) ** (calendar_days / 365.0) - 1.0
+                )
+                if config.cash_yield_enabled and cash > 0:
+                    cash_interest = cash * risk_free_return
+                    cash += cash_interest
+                    cash_interest_earned += cash_interest
         turnover = 0.0
         exit_reason = ""
+        execution_actions: list[str] = []
+        entry_fill_price = np.nan
+        exit_fill_price = np.nan
 
         cost_rate = trading_cost_bps / 10000
         open_equity = cash + units * open_price
@@ -2652,9 +2973,14 @@ def backtest_next_open(
             turnover += proceeds / equity_before if equity_before > 0 else 0.0
             cash += proceeds * (1 - cost_rate)
             units = 0.0
+            entry_price = np.nan
+            entry_target_fraction = 0.0
             stop_price = np.nan
             take_profit_price = np.nan
-            exit_reason = "next_open_trend_exit"
+            hmm_exit_streak = 0
+            exit_reason = pending_exit_reason or "next_open_rule_exit"
+            exit_fill_price = open_price
+            execution_actions.append("卖出")
 
         if units > 0 and not pending_exit:
             gap_stop = np.isfinite(stop_price) and open_price <= stop_price
@@ -2664,33 +2990,85 @@ def backtest_next_open(
                 turnover += proceeds / equity_before if equity_before > 0 else 0.0
                 cash += proceeds * (1 - cost_rate)
                 units = 0.0
+                entry_price = np.nan
+                entry_target_fraction = 0.0
                 stop_price = np.nan
                 take_profit_price = np.nan
                 hmm_exit_streak = 0
                 exit_reason = "atr_stop_gap" if gap_stop else "atr_take_profit_gap"
+                exit_fill_price = open_price
+                execution_actions.append("卖出")
 
         open_equity = cash + units * open_price
-        drawdown_before = open_equity / peak - 1
+        drawdown_before = open_equity / risk_peak - 1
         drawdown_scale = 1.0
-        if drawdown_before <= -config.max_drawdown_hard:
+        if hard_drawdown_cooldown == 0 and drawdown_before <= -config.max_drawdown_hard:
+            hard_drawdown_cooldown = config.hard_drawdown_cooldown_days
+        if hard_drawdown_cooldown > 0:
             drawdown_scale = config.live_hard_drawdown_position
+            hard_drawdown_cooldown -= 1
+            if hard_drawdown_cooldown == 0:
+                risk_peak = max(open_equity, 1e-12)
         elif drawdown_before <= -config.max_drawdown_soft:
             drawdown_scale = config.live_soft_drawdown_position
+        if units > 0 and drawdown_scale < 1.0:
+            target_notional_after_drawdown = entry_target_fraction * drawdown_scale * open_equity
+            current_notional = units * open_price
+            reduction_notional = max(0.0, current_notional - target_notional_after_drawdown)
+            if reduction_notional > 1e-12:
+                reduction_units = min(units, reduction_notional / open_price)
+                proceeds = reduction_units * open_price
+                turnover += proceeds / equity_before if equity_before > 0 else 0.0
+                cash += proceeds * (1 - cost_rate)
+                units -= reduction_units
+                exit_fill_price = open_price
+                execution_actions.append("卖出（回撤减仓）")
+                exit_reason = "drawdown_risk_reduction"
+                if units <= 1e-12:
+                    units = 0.0
+                    entry_price = np.nan
+                    entry_target_fraction = 0.0
+                    stop_price = np.nan
+                    take_profit_price = np.nan
+                    hmm_exit_streak = 0
         if pending_entry and units <= 0 and drawdown_scale > 0:
-            target_fraction = (
-                risk_position_size(open_price, pending_entry_atr, config, pending_entry_risk_budget)
-                * drawdown_scale
+            if np.isfinite(pending_entry_target_override):
+                base_target_fraction = float(pending_entry_target_override)
+            else:
+                base_target_fraction = risk_position_size(
+                    open_price,
+                    pending_entry_atr,
+                    config,
+                    pending_entry_risk_budget,
+                )
+            base_target_fraction = min(
+                config.max_position,
+                config.max_leverage,
+                max(0.0, base_target_fraction),
             )
+            target_fraction = base_target_fraction * drawdown_scale
             available_equity = max(cash, 0.0)
             target_notional = target_fraction * available_equity
             notional = min(target_notional, available_equity / (1 + cost_rate))
             entry_cost = notional * cost_rate
             units = notional / open_price if open_price > 0 else 0.0
+            entry_price = open_price if units > 0 else np.nan
+            entry_target_fraction = base_target_fraction if units > 0 else 0.0
+            entry_fill_price = open_price if units > 0 else np.nan
             cash -= notional + entry_cost
             turnover += notional / equity_before if equity_before > 0 else 0.0
+            execution_actions.append("买入")
             if np.isfinite(pending_entry_atr):
-                stop_price = open_price - config.stop_atr_multiple * pending_entry_atr
-                take_profit_price = open_price + config.profit_atr_multiple * pending_entry_atr
+                stop_price = (
+                    open_price - config.stop_atr_multiple * pending_entry_atr
+                    if bool(row.get("atr_stop_enabled", config.atr_stop_enabled))
+                    else np.nan
+                )
+                take_profit_price = (
+                    open_price + config.profit_atr_multiple * pending_entry_atr
+                    if bool(row.get("atr_profit_enabled", config.atr_profit_enabled))
+                    else np.nan
+                )
 
         if units > 0:
             hit_stop = np.isfinite(stop_price) and float(row["gold_low"]) <= stop_price
@@ -2708,33 +3086,103 @@ def backtest_next_open(
                 turnover += proceeds / equity_before if equity_before > 0 else 0.0
                 cash += proceeds * (1 - cost_rate)
                 units = 0.0
+                entry_price = np.nan
+                entry_target_fraction = 0.0
                 stop_price = np.nan
                 take_profit_price = np.nan
                 hmm_exit_streak = 0
+                exit_fill_price = end_price
+                execution_actions.append("卖出")
 
         equity = cash + units * close_price
+        if cash < -1e-10 or units < -1e-12 or units * close_price > equity + 1e-9:
+            raise RuntimeError(
+                f"Long-only cash accounting invariant failed on {date}: cash={cash}, units={units}, equity={equity}"
+            )
 
         strategy_ret = equity / equity_before - 1
         peak = max(peak, equity)
+        if hard_drawdown_cooldown == 0:
+            risk_peak = max(risk_peak, equity)
         pending_entry = False
         pending_exit = False
+        pending_exit_reason = ""
+        pending_entry_target_override = np.nan
+        target_override = np.nan
+        entry_ready = False
+        entry_blocked_by_drawdown = False
+        pending_entry_drawdown_scale = 1.0
 
         if units > 0:
             hmm_exit_setup = row["market_state"] in ["熊市", "恐慌"] and close_price < float(row["sma_60"])
-            hmm_exit_streak = hmm_exit_streak + 1 if hmm_exit_setup else 0
+            hmm_exit_enabled = bool(row.get("hmm_exit_enabled", config.hmm_exit_enabled))
+            hmm_exit_streak = hmm_exit_streak + 1 if hmm_exit_enabled and hmm_exit_setup else 0
             model_exit = (
                 config.xgboost_use_model_exit
                 and bool(row.get("tb_event", False))
                 and np.isfinite(row.get("p_profit_first_event", np.nan))
                 and float(row["p_profit_first_event"]) <= config.down_threshold
             )
-            pending_exit = bool(model_exit or hmm_exit_streak >= config.hmm_exit_confirmation_days)
-        elif bool(row.get("tb_accepted_event", False)) and np.isfinite(row.get("atr", np.nan)):
+            trend_exit = bool(row.get("trend_exit_enabled", config.trend_exit_enabled)) and not bool(
+                row.get("primary_trend_signal", False)
+            )
+            hmm_exit = hmm_exit_enabled and hmm_exit_streak >= config.hmm_exit_confirmation_days
+            pending_exit = bool(model_exit or hmm_exit or trend_exit)
+            if model_exit:
+                pending_exit_reason = "next_open_model_exit"
+            elif hmm_exit:
+                pending_exit_reason = "next_open_hmm_exit"
+            elif trend_exit:
+                pending_exit_reason = "next_open_primary_trend_exit"
+        else:
+            target_override = float(row.get("target_position_override", np.nan))
+            entry_ready = np.isfinite(row.get("atr", np.nan)) or np.isfinite(target_override)
+        entry_signal = units <= 0 and bool(row.get("tb_accepted_event", False)) and entry_ready
+        entry_blocked_by_drawdown = bool(entry_signal and hard_drawdown_cooldown > 0)
+        if entry_signal and not entry_blocked_by_drawdown:
             pending_entry = True
-            pending_entry_atr = float(row["atr"])
+            pending_entry_atr = float(row.get("atr", np.nan))
             pending_entry_risk_budget = trend_risk_budget(row, config)
+            pending_entry_target_override = target_override
+            pending_entry_drawdown_scale = drawdown_scale if drawdown_scale > 0 else 1.0
 
         position = units * close_price / equity if units > 0 and equity > 0 else 0.0
+        if position < -1e-12 or position > 1.0 + 1e-9:
+            raise RuntimeError(f"Long-only unlevered position invariant failed on {date}: {position}")
+        desired_position = position
+        if pending_entry:
+            if np.isfinite(pending_entry_target_override):
+                desired_position = (
+                    min(1.0, max(0.0, pending_entry_target_override))
+                    * pending_entry_drawdown_scale
+                )
+            else:
+                desired_position = (
+                    risk_position_size(
+                        close_price,
+                        pending_entry_atr,
+                        config,
+                        pending_entry_risk_budget,
+                    )
+                    * pending_entry_drawdown_scale
+                )
+        elif pending_exit:
+            desired_position = 0.0
+        if entry_blocked_by_drawdown:
+            guide = f"回撤冷却（剩余 {hard_drawdown_cooldown} 日）"
+            raw_signal = "risk_halted"
+        elif pending_exit:
+            guide = "卖出（下一交易日开盘）"
+            raw_signal = "flat_pending"
+        elif pending_entry:
+            guide = "买入（下一交易日开盘）"
+            raw_signal = "long_pending"
+        elif position > 0:
+            guide = "持有"
+            raw_signal = "long"
+        else:
+            guide = "卖出/空仓" if not bool(row.get("primary_trend_signal", False)) else "持有/观望"
+            raw_signal = "flat" if not bool(row.get("primary_trend_signal", False)) else "hold"
 
         rows.append(
             {
@@ -2742,17 +3190,41 @@ def backtest_next_open(
                 "strategy_ret": strategy_ret,
                 "benchmark_ret": row["benchmark_ret"],
                 "position": position,
-                "desired_position": 1.0 if pending_entry else (0.0 if pending_exit else position),
+                "desired_position": desired_position,
                 "turnover": turnover,
+                "cash": cash,
+                "cash_interest": cash_interest,
+                "cash_interest_earned": cash_interest_earned,
+                "cash_yield_pct_used": applied_cash_yield_pct,
+                "risk_free_return": risk_free_return,
+                "units": units,
+                "entry_price": entry_price,
+                "entry_target_fraction": entry_target_fraction,
+                "entry_fill_price": entry_fill_price,
+                "exit_fill_price": exit_fill_price,
                 "equity": equity,
                 "benchmark_equity": np.nan,
                 "drawdown": equity / peak - 1,
                 "drawdown_scale": drawdown_scale,
+                "hard_drawdown_cooldown": hard_drawdown_cooldown,
+                "execution_action": "/".join(execution_actions) if execution_actions else "持有/观望",
                 "exit_reason": exit_reason,
+                "pending_exit_reason": pending_exit_reason,
+                "pending_entry": pending_entry,
+                "pending_exit": pending_exit,
+                "entry_blocked_by_drawdown": entry_blocked_by_drawdown,
+                "guide": guide,
+                "raw_signal": raw_signal,
                 "stop_price": stop_price,
                 "take_profit_price": take_profit_price,
+                "atr_stop": stop_price,
+                "tb_take_profit": take_profit_price,
             }
         )
+        previous_date = pd.Timestamp(date)
+        current_cash_yield = float(row.get("cash_yield_pct", np.nan))
+        if np.isfinite(current_cash_yield):
+            previous_cash_yield_pct = current_cash_yield
     live = pd.DataFrame(rows).set_index("date")
     live["benchmark_equity"] = (1 + live["benchmark_ret"].fillna(0)).cumprod()
     days = max(len(live), 1)
@@ -2760,17 +3232,18 @@ def backtest_next_open(
     benchmark_return = live["benchmark_equity"].iloc[-1] - 1
     annual_return = live["equity"].iloc[-1] ** (252 / days) - 1
     annual_vol = live["strategy_ret"].std() * math.sqrt(252)
+    excess_ret = live["strategy_ret"] - live["risk_free_return"]
     sharpe = (
-        live["strategy_ret"].mean() / live["strategy_ret"].std() * math.sqrt(252)
-        if live["strategy_ret"].std() and np.isfinite(live["strategy_ret"].std())
+        excess_ret.mean() / excess_ret.std() * math.sqrt(252)
+        if excess_ret.std() and np.isfinite(excess_ret.std())
         else 0.0
     )
     active_days = float((live["position"] > 0).mean())
     win_days = live.loc[live["strategy_ret"] != 0, "strategy_ret"]
-    downside = live["strategy_ret"].clip(upper=0)
+    downside = excess_ret.clip(upper=0)
     downside_vol = downside.std() * math.sqrt(252)
     sortino = (
-        live["strategy_ret"].mean() * 252 / downside_vol
+        excess_ret.mean() * 252 / downside_vol
         if downside_vol and np.isfinite(downside_vol)
         else 0.0
     )
@@ -2778,14 +3251,16 @@ def backtest_next_open(
     calmar = annual_return / abs(max_drawdown) if max_drawdown < 0 else 0.0
     benchmark_drawdown = live["benchmark_equity"] / live["benchmark_equity"].cummax() - 1
     benchmark_vol = live["benchmark_ret"].std() * math.sqrt(252)
+    benchmark_excess_ret = live["benchmark_ret"] - live["risk_free_return"]
     benchmark_sharpe = (
-        live["benchmark_ret"].mean() / live["benchmark_ret"].std() * math.sqrt(252)
-        if live["benchmark_ret"].std()
+        benchmark_excess_ret.mean() / benchmark_excess_ret.std() * math.sqrt(252)
+        if benchmark_excess_ret.std()
         else 0.0
     )
     metrics = {
         "execution_model": "t_close_signal_t_plus_1_open_with_intraday_atr_fills",
         "cost_bps": trading_cost_bps,
+        "sharpe_definition": "annualized_excess_return_over_lagged_haircut_cash_yield",
         "total_return": float(total_return),
         "benchmark_return": float(benchmark_return),
         "annual_return": float(annual_return),
@@ -2800,27 +3275,43 @@ def backtest_next_open(
         "active_day_ratio": active_days,
         "daily_win_rate_when_active": float((win_days > 0).mean()) if len(win_days) else 0.0,
         "test_trades": int((live["turnover"] > 0).sum()),
+        "entries": int(live["execution_action"].str.contains("买入").sum()),
+        "exits": int(live["execution_action"].str.contains("卖出").sum()),
         "turnover": float(live["turnover"].sum()),
         "drawdown_scaled_days": int((live["drawdown_scale"] < 1).sum()),
+        "cash_interest_earned": float(live["cash_interest"].sum()),
     }
     if write_log:
         live.to_csv(LOCAL_LOGS / "gold_live_execution.csv", encoding="utf-8-sig")
     return live, metrics
 
 
-def make_position_signal_frame(frame: pd.DataFrame, position: pd.Series, name: str) -> pd.DataFrame:
+def make_position_signal_frame(
+    frame: pd.DataFrame,
+    position: pd.Series,
+    name: str,
+    start_at: pd.Timestamp,
+) -> pd.DataFrame:
+    """Convert a long-only target rule into intents for the strict next-open engine."""
     out = frame.copy()
     aligned = position.reindex(out.index).fillna(0.0).astype(float).clip(0.0, 1.0)
-    out["position"] = aligned
-    change = aligned.diff().fillna(aligned)
-    out["execution_action"] = np.where(change > 0, "买入", np.where(change < 0, "卖出", "持有/观望"))
-    out["raw_signal"] = np.where(aligned > 0, "long", "flat")
-    out["guide"] = np.where(aligned > 0, "持有", "卖出/空仓")
+    active = pd.Series(out.index >= start_at, index=out.index)
+    prior = aligned.shift(1).fillna(0.0)
+    entry_event = active & (aligned > 0) & ((prior <= 0) | (out.index == start_at))
+    out["position"] = 0.0
+    out["execution_action"] = "持有/观望"
+    out["raw_signal"] = "flat"
+    out["guide"] = "卖出/空仓"
     out["atr_stop"] = np.nan
     out["tb_take_profit"] = np.nan
-    out["tb_event"] = False
-    out["tb_accepted_event"] = False
+    out["tb_event"] = entry_event
+    out["tb_accepted_event"] = entry_event
     out["primary_trend_signal"] = aligned > 0
+    out["atr_stop_enabled"] = False
+    out["atr_profit_enabled"] = False
+    out["hmm_exit_enabled"] = False
+    out["trend_exit_enabled"] = True
+    out["target_position_override"] = aligned
     out["ablation_name"] = name
     return out
 
@@ -2834,6 +3325,8 @@ def metric_subset(metrics: dict[str, float]) -> dict[str, float]:
         "active_day_ratio",
         "daily_win_rate_when_active",
         "test_trades",
+        "entries",
+        "exits",
         "turnover",
         "net_total_return_5bps",
         "net_sharpe_5bps",
@@ -2842,21 +3335,28 @@ def metric_subset(metrics: dict[str, float]) -> dict[str, float]:
     return {key: metrics[key] for key in keys if key in metrics}
 
 
-def build_yearly_backtest_report(backtest_frame: pd.DataFrame) -> list[dict[str, Any]]:
+def build_yearly_backtest_report(
+    backtest_frame: pd.DataFrame,
+    *,
+    cost_bps: float,
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for year, subset in backtest_frame.groupby(backtest_frame.index.year):
         strategy_ret = subset["strategy_ret"].fillna(0)
+        risk_free_ret = subset.get("risk_free_return", pd.Series(0.0, index=subset.index)).fillna(0)
+        excess_ret = strategy_ret - risk_free_ret
         benchmark_ret = subset["benchmark_ret"].fillna(0)
         equity = (1 + strategy_ret).cumprod()
         benchmark = (1 + benchmark_ret).cumprod()
         drawdown = equity / equity.cummax() - 1
-        volatility = strategy_ret.std()
+        volatility = excess_ret.std()
         rows.append(
             {
                 "year": int(year),
+                "cost_bps": float(cost_bps),
                 "total_return": float(equity.iloc[-1] - 1),
                 "benchmark_return": float(benchmark.iloc[-1] - 1),
-                "sharpe": float(strategy_ret.mean() / volatility * math.sqrt(252)) if volatility else 0.0,
+                "sharpe": float(excess_ret.mean() / volatility * math.sqrt(252)) if volatility else 0.0,
                 "max_drawdown": float(drawdown.min()),
                 "average_position": float(subset["position"].mean()),
                 "turnover": float(subset["turnover"].sum()),
@@ -2864,6 +3364,65 @@ def build_yearly_backtest_report(backtest_frame: pd.DataFrame) -> list[dict[str,
         )
     pd.DataFrame(rows).to_csv(LOCAL_LOGS / "gold_backtest_yearly.csv", index=False, encoding="utf-8-sig")
     return rows
+
+
+def moving_block_bootstrap_summary(
+    backtest_frame: pd.DataFrame,
+    *,
+    block_length: int = 20,
+    simulations: int = 2_000,
+    seed: int = 20260713,
+) -> dict[str, Any]:
+    """Quantify path uncertainty without treating shuffled daily returns as independent."""
+    returns = backtest_frame["strategy_ret"].fillna(0.0).to_numpy(dtype=float)
+    risk_free_returns = backtest_frame.get(
+        "risk_free_return",
+        pd.Series(0.0, index=backtest_frame.index),
+    ).fillna(0.0).to_numpy(dtype=float)
+    if len(returns) < block_length:
+        raise RuntimeError("Backtest is too short for the configured moving-block bootstrap")
+    rng = np.random.default_rng(seed)
+    blocks_needed = math.ceil(len(returns) / block_length)
+    max_start = len(returns) - block_length
+    total_returns = np.empty(simulations)
+    sharpes = np.empty(simulations)
+    max_drawdowns = np.empty(simulations)
+    for simulation in range(simulations):
+        starts = rng.integers(0, max_start + 1, size=blocks_needed)
+        sample_indices = np.concatenate(
+            [np.arange(start, start + block_length) for start in starts]
+        )[: len(returns)]
+        sample = returns[sample_indices]
+        sample_risk_free = risk_free_returns[sample_indices]
+        sample_excess = sample - sample_risk_free
+        equity = np.cumprod(1.0 + sample)
+        drawdown = equity / np.maximum.accumulate(equity) - 1.0
+        volatility = sample_excess.std(ddof=1)
+        total_returns[simulation] = equity[-1] - 1.0
+        sharpes[simulation] = (
+            sample_excess.mean() / volatility * math.sqrt(252)
+            if volatility and np.isfinite(volatility)
+            else 0.0
+        )
+        max_drawdowns[simulation] = drawdown.min()
+
+    def percentiles(values: np.ndarray) -> dict[str, float]:
+        low, median, high = np.quantile(values, [0.05, 0.50, 0.95])
+        return {"p05": float(low), "median": float(median), "p95": float(high)}
+
+    return {
+        "method": "moving_block_bootstrap_on_realized_8bps_daily_returns",
+        "development_sample_only": True,
+        "multiple_testing_correction": False,
+        "block_length_days": block_length,
+        "simulations": simulations,
+        "seed": seed,
+        "total_return": percentiles(total_returns),
+        "sharpe": percentiles(sharpes),
+        "max_drawdown": percentiles(max_drawdowns),
+        "probability_positive_total_return": float((total_returns > 0).mean()),
+        "probability_positive_sharpe": float((sharpes > 0).mean()),
+    }
 
 
 def run_parameter_stability_report(
@@ -2877,12 +3436,14 @@ def run_parameter_stability_report(
         ("fallback_reference", config),
         ("profit_8", replace(config, profit_atr_multiple=8.0)),
         ("profit_12", replace(config, profit_atr_multiple=12.0)),
+        ("profit_disabled", replace(config, atr_profit_enabled=False)),
         ("stop_5", replace(config, stop_atr_multiple=5.0)),
         ("stop_7", replace(config, stop_atr_multiple=7.0)),
         ("hmm_confirm_15", replace(config, hmm_exit_confirmation_days=15)),
         ("hmm_confirm_30", replace(config, hmm_exit_confirmation_days=30)),
         ("event_gap_3", replace(config, meta_event_gap_days=3)),
         ("event_gap_8", replace(config, meta_event_gap_days=8)),
+        ("cusum_positive", replace(config, meta_event_kind="cusum_positive")),
         ("normal_risk_9", replace(config, normal_trend_risk_budget=0.09)),
         ("normal_risk_11", replace(config, normal_trend_risk_budget=0.11)),
         ("strong_risk_12", replace(config, strong_trend_risk_budget=0.12)),
@@ -2933,6 +3494,7 @@ def run_entry_mode_comparison_report(
     """Compare predeclared trend and low-price entry environments under the formal engine."""
     modes = [
         "trend_slow",
+        "tsmom_ensemble",
         "below_sma_60",
         "below_sma_120",
         "dip_recovery_60",
@@ -2987,59 +3549,111 @@ def run_ablation_experiments(
 ) -> list[dict[str, Any]]:
     probabilities = pd.Series(np.nan, index=frame.index)
     trend_signal = primary_long_signal(frame, "trend_slow")
-    hmm_signal = primary_long_signal(frame, config.primary_signal_mode)
     test_mask_series = pd.Series(test_mask, index=frame.index).astype(bool)
     test_start = frame.index[test_mask_series].min()
+    no_drawdown_config = replace(
+        config,
+        max_drawdown_soft=1.0,
+        max_drawdown_hard=1.0,
+    )
+    buy_and_hold = make_position_signal_frame(
+        frame,
+        pd.Series(1.0, index=frame.index),
+        "A_buy_and_hold_gold",
+        test_start,
+    )
+    trend_target = make_position_signal_frame(
+        frame,
+        trend_signal.astype(float),
+        "B_technical_trend_target",
+        test_start,
+    )
+    trend_cusum = generate_signals(
+        frame,
+        probabilities,
+        no_drawdown_config,
+        use_xgboost=False,
+        use_atr=False,
+        primary_mode="trend_slow",
+        start_at=test_start,
+        use_hmm_exit=False,
+        use_trend_exit=True,
+    )
+    trend_cusum["target_position_override"] = 1.0
+    trend_cusum_hmm = generate_signals(
+        frame,
+        probabilities,
+        no_drawdown_config,
+        use_xgboost=False,
+        use_atr=False,
+        start_at=test_start,
+        use_hmm_exit=True,
+        use_trend_exit=False,
+    )
+    trend_cusum_hmm["target_position_override"] = 1.0
+    fixed_risk_config = replace(
+        no_drawdown_config,
+        dynamic_trend_risk_enabled=False,
+        max_single_loss=0.12,
+    )
+    fixed_risk_signals = generate_signals(
+        frame,
+        probabilities,
+        fixed_risk_config,
+        use_xgboost=False,
+        use_atr=True,
+        start_at=test_start,
+    )
     variants = [
         (
             "A_buy_and_hold_gold",
-            "买入并持有黄金",
-            make_position_signal_frame(frame, pd.Series(1.0, index=frame.index), "A_buy_and_hold_gold"),
+            "买入并持有黄金（严格次日开盘）",
+            buy_and_hold,
+            no_drawdown_config,
         ),
         (
-            "B_technical_trend_filter",
-            "纯技术趋势过滤",
-            make_position_signal_frame(frame, trend_signal.astype(float), "B_technical_trend_filter"),
+            "B_technical_trend_target",
+            "纯技术趋势目标仓位",
+            trend_target,
+            no_drawdown_config,
         ),
         (
-            "C_primary_trend_filter",
-            "正式主趋势过滤（当前为 120 日趋势）",
-            make_position_signal_frame(frame, hmm_signal.astype(float), "C_primary_trend_filter"),
+            "C_trend_cusum",
+            "趋势 + CUSUM（满仓、趋势退出）",
+            trend_cusum,
+            no_drawdown_config,
         ),
         (
-            "D_trend_cusum",
-            "技术趋势 + CUSUM，无 HMM/ATR",
-            generate_signals(frame, probabilities, config, use_xgboost=False, use_atr=False, primary_mode="trend_slow", start_at=test_start),
+            "D_trend_cusum_hmm",
+            "趋势 + CUSUM（HMM替代趋势退出、满仓）",
+            trend_cusum_hmm,
+            no_drawdown_config,
         ),
         (
-            "E_primary_cusum",
-            "正式主趋势 + CUSUM，无 ATR",
-            generate_signals(frame, probabilities, config, use_xgboost=False, use_atr=False, start_at=test_start),
-        ),
-        (
-            "F_primary_cusum_atr",
-            "正式主趋势 + CUSUM + ATR（固定 12% 风险）",
-            generate_signals(
-                frame,
-                probabilities,
-                replace(config, dynamic_trend_risk_enabled=False, max_single_loss=0.12),
-                use_xgboost=False,
-                use_atr=True,
-                start_at=test_start,
-            ),
+            "E_trend_cusum_hmm_atr_fixed",
+            "趋势 + CUSUM + HMM + ATR（固定12%风险）",
+            fixed_risk_signals,
+            fixed_risk_config,
         ),
     ]
     if formal_signals is not None:
         variants.append(
             (
-                "G_formal_strategy",
-                "正式动态风险策略",
+                "F_formal_strategy",
+                "正式动态风险策略（统一执行）",
                 formal_signals,
+                config,
             )
         )
     rows: list[dict[str, Any]] = []
-    for name, label, signals in variants:
-        _, metrics = backtest(signals, test_mask)
+    for name, label, signals, variant_config in variants:
+        _, metrics = backtest_next_open(
+            signals,
+            test_mask,
+            variant_config,
+            cost_bps=5.0,
+            write_log=False,
+        )
         rows.append({"name": name, "label": label, **metric_subset(metrics)})
     pd.DataFrame(rows).to_csv(LOCAL_LOGS / "gold_ablation.csv", index=False, encoding="utf-8-sig")
     return rows
@@ -3082,6 +3696,171 @@ def xgboost_feature_groups(importances: pd.DataFrame) -> list[dict[str, Any]]:
     return groups
 
 
+def overlay_execution_state(
+    signal_frame: pd.DataFrame,
+    execution_frame: pd.DataFrame,
+) -> pd.DataFrame:
+    """Use the strict next-open ledger as the sole public position and order state."""
+    out = signal_frame.copy()
+    if execution_frame.empty:
+        raise RuntimeError("Public execution state requires a non-empty strict ledger")
+    pre_execution = out.index < execution_frame.index.min()
+    public_state_columns = [
+        "position",
+        "atr_stop",
+        "tb_take_profit",
+        "guide",
+        "raw_signal",
+        "execution_action",
+        "exit_reason",
+        "desired_position",
+        "pending_entry",
+        "pending_exit",
+        "entry_blocked_by_drawdown",
+    ]
+    for column in public_state_columns:
+        if column in out:
+            out.loc[pre_execution, column] = np.nan
+    common_index = out.index.intersection(execution_frame.index)
+    mapping = {
+        "position": "position",
+        "atr_stop": "atr_stop",
+        "tb_take_profit": "tb_take_profit",
+        "guide": "guide",
+        "raw_signal": "raw_signal",
+        "execution_action": "execution_action",
+        "exit_reason": "exit_reason",
+    }
+    for execution_column, signal_column in mapping.items():
+        if execution_column in execution_frame:
+            out.loc[common_index, signal_column] = execution_frame.loc[common_index, execution_column]
+    for column in [
+        "desired_position",
+        "pending_entry",
+        "pending_exit",
+        "entry_blocked_by_drawdown",
+    ]:
+        if column in execution_frame:
+            out.loc[common_index, column] = execution_frame.loc[common_index, column]
+    return out
+
+
+def formal_strategy_fingerprint(config: RiskConfig) -> str:
+    config_payload = {
+        key: value
+        for key, value in asdict(config).items()
+        if not key.startswith("xgboost_")
+        and key not in {"up_threshold", "down_threshold", "prediction_horizon_days"}
+    }
+    payload = {
+        "strategyVersion": FORMAL_STRATEGY_VERSION,
+        "executionEngineVersion": EXECUTION_ENGINE_VERSION,
+        "config": config_payload,
+    }
+    encoded = json.dumps(json_safe(payload), ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def update_forward_ledger(
+    execution_frame: pd.DataFrame,
+    config: RiskConfig,
+) -> dict[str, Any]:
+    """Validate immutable forward records and append only newly observed trading days."""
+    ensure_dirs()
+    fingerprint = formal_strategy_fingerprint(config)
+    forward_start = pd.Timestamp(config.forward_holdout_start_date)
+    candidate_frame = execution_frame.loc[execution_frame.index >= forward_start]
+    candidate_records: list[dict[str, Any]] = []
+    for date, row in candidate_frame.iterrows():
+        candidate_records.append(
+            {
+                "date": str(pd.Timestamp(date).date()),
+                "strategyReturn": float(row["strategy_ret"]),
+                "benchmarkReturn": float(row["benchmark_ret"]),
+                "position": float(row["position"]),
+                "recommendedPosition": float(row["desired_position"]),
+                "turnover": float(row["turnover"]),
+                "cashInterest": float(row.get("cash_interest", 0.0)),
+                "executionAction": str(row["execution_action"]),
+                "guide": str(row["guide"]),
+                "pendingEntry": bool(row["pending_entry"]),
+                "pendingExit": bool(row["pending_exit"]),
+            }
+        )
+
+    ledger = {
+        "strategyVersion": FORMAL_STRATEGY_VERSION,
+        "executionEngineVersion": EXECUTION_ENGINE_VERSION,
+        "configFingerprint": fingerprint,
+        "start": config.forward_holdout_start_date,
+        "appendOnly": True,
+        "records": [],
+    }
+    if FORWARD_LEDGER.exists():
+        existing = json.loads(FORWARD_LEDGER.read_text(encoding="utf-8"))
+        for key in [
+            "strategyVersion",
+            "executionEngineVersion",
+            "configFingerprint",
+            "start",
+        ]:
+            if existing.get(key) != ledger[key]:
+                raise RuntimeError(
+                    f"Forward ledger {key} changed; create a new declared strategy version instead of rewriting history"
+                )
+        if existing.get("appendOnly") is not True or not isinstance(existing.get("records"), list):
+            raise RuntimeError("Forward ledger schema is invalid")
+        ledger = existing
+
+    existing_by_date = {record["date"]: record for record in ledger["records"]}
+    candidate_by_date = {record["date"]: record for record in candidate_records}
+    for date, existing_record in existing_by_date.items():
+        candidate_record = candidate_by_date.get(date)
+        if candidate_record is None:
+            raise RuntimeError(f"Forward ledger date {date} disappeared from the recomputed execution history")
+        for key, expected in existing_record.items():
+            actual = candidate_record.get(key)
+            if isinstance(expected, (int, float)) and not isinstance(expected, bool):
+                if not np.isfinite(float(actual)) or abs(float(actual) - float(expected)) > 1e-10:
+                    raise RuntimeError(f"Forward ledger history changed on {date}: {key}")
+            elif actual != expected:
+                raise RuntimeError(f"Forward ledger history changed on {date}: {key}")
+
+    last_existing_date = max(existing_by_date, default="")
+    missing_historical = [
+        record["date"]
+        for record in candidate_records
+        if record["date"] not in existing_by_date and record["date"] <= last_existing_date
+    ]
+    if missing_historical:
+        raise RuntimeError(f"Forward ledger has non-append gaps: {missing_historical[:3]}")
+    new_records = [record for record in candidate_records if record["date"] > last_existing_date]
+    ledger["records"].extend(new_records)
+    FORWARD_LEDGER.write_text(
+        json.dumps(json_safe(ledger), ensure_ascii=False, indent=2, allow_nan=False),
+        encoding="utf-8",
+    )
+
+    records = ledger["records"]
+    strategy_returns = pd.Series([record["strategyReturn"] for record in records], dtype=float)
+    benchmark_returns = pd.Series([record["benchmarkReturn"] for record in records], dtype=float)
+    return {
+        "start": config.forward_holdout_start_date,
+        "end": records[-1]["date"] if records else None,
+        "days": int(len(records)),
+        "total_return": float((1.0 + strategy_returns).prod() - 1.0) if records else 0.0,
+        "benchmark_return": float((1.0 + benchmark_returns).prod() - 1.0) if records else 0.0,
+        "average_position": (
+            float(np.mean([record["position"] for record in records])) if records else 0.0
+        ),
+        "trade_days": int(sum(record["turnover"] > 0 for record in records)),
+        "append_only": True,
+        "strategy_version": FORMAL_STRATEGY_VERSION,
+        "execution_engine_version": EXECUTION_ENGINE_VERSION,
+        "config_fingerprint": fingerprint,
+    }
+
+
 def build_outputs(
     signal_frame: pd.DataFrame,
     backtest_frame: pd.DataFrame,
@@ -3089,7 +3868,7 @@ def build_outputs(
     live_execution_metrics: dict[str, float],
     forward_holdout_metrics: dict[str, Any],
     yearly_backtest_metrics: list[dict[str, Any]],
-    ablation_metrics: list[dict[str, Any]],
+    backtest_robustness: dict[str, Any],
     entry_mode_comparison: list[dict[str, Any]],
     sources: dict[str, str],
     state_mapping: dict[int, str],
@@ -3116,6 +3895,7 @@ def build_outputs(
         "payoff_ratio",
         "historical_train_win_rate",
         "trend_risk_budget",
+        "cash_yield_pct",
         "dxy_close",
         "us10y_close",
         "tips_10y_real_yield",
@@ -3158,6 +3938,10 @@ def build_outputs(
         "guide": str(latest["guide"]),
         "rawSignal": str(latest["raw_signal"]),
         "position": float(latest["position"]),
+        "recommendedPosition": float(latest.get("desired_position", latest["position"])),
+        "pendingEntry": bool(latest.get("pending_entry", False)),
+        "pendingExit": bool(latest.get("pending_exit", False)),
+        "riskHalted": bool(latest.get("entry_blocked_by_drawdown", False)),
         "atrStop": None if pd.isna(latest["atr_stop"]) else float(latest["atr_stop"]),
         "takeProfit": None if pd.isna(latest["tb_take_profit"]) else float(latest["tb_take_profit"]),
         "atrPct": float(latest["atr_pct"]),
@@ -3166,7 +3950,7 @@ def build_outputs(
         "liveExecutionMetrics": live_execution_metrics,
         "forwardHoldoutMetrics": forward_holdout_metrics,
         "backtestYearly": yearly_backtest_metrics,
-        "ablation": ablation_metrics,
+        "backtestRobustness": backtest_robustness,
         "entryModeComparison": entry_mode_comparison,
         "stateMapping": {str(k): v for k, v in state_mapping.items()},
         "sources": sources,
@@ -3182,13 +3966,16 @@ def build_outputs(
             "GPR 使用 Caldara-Iacoviello 月度地缘政治风险指数，并做月末后 7 天滞后近似。",
             "FOMC 事件来自美联储会议日历，作为事件日和 proximity 特征。",
             "正式算法不再训练或读取机器学习分类概率；交易决策完全来自可解释的趋势、CUSUM、ATR 和 walk-forward HMM 规则。",
+            "网站持仓、止损、止盈和待执行动作统一来自正式次日开盘执行账本，不再使用独立的收盘成交状态机。",
+            f"HMM 固定使用初始训练期可用的 {config.hmm_feature_policy} 特征集合，后续重训不允许因数据源变长而改变模型维度。",
             "低于 60/120 日均线、240 日新低、带反转确认以及趋势与低点并集模式均已用冻结验证和严格执行引擎比较，正式策略保留 120 日趋势入场。",
-            "训练和验证截止日已经冻结；2026-06-20 之后的新数据作为 forward holdout，不回流到历史参数选择。",
+            f"训练和验证截止日已经冻结；{config.forward_holdout_start_date} 之后的新数据作为 forward holdout，不回流到历史参数选择。",
             f"HMM 使用 expanding walk-forward，并约每 {config.hmm_retrain_every_days} 个交易日重训一次，所有状态概率只使用当时可得数据。",
             f"入场仓位按 ATR 止损距离缩放：普通趋势风险预算 {config.normal_trend_risk_budget:.0%}，120 日收益达到 {config.strong_trend_ret_120_threshold:.0%} 的强趋势预算 {config.strong_trend_risk_budget:.0%}；隔夜跳空可能使实际损失超过计划值。",
             "实盘模拟使用 t 日收盘信号、t+1 日开盘成交、盘中 ATR 障碍、双边交易成本和回撤降仓约束。",
             "网站主回测采用次日开盘事件驱动口径；盘中障碍按障碍价成交，隔夜跳空穿越障碍按开盘价成交。",
             "部分仓位回测使用现金与黄金持仓单位逐日盯市，不假设开盘免费再平衡。",
+            f"未投资现金按上一可得日 FRED DGS3MO 三个月美债收益率计息，并保守扣减 {config.cash_yield_haircut_bps:.0f}bps；现金利息与黄金择时收益分开披露。",
             f"HMM 退出需要熊市/恐慌且跌破 60 日均线连续确认 {config.hmm_exit_confirmation_days} 天。",
             "研究结果不构成投资建议。",
         ],
@@ -3207,6 +3994,10 @@ def build_outputs(
         "market_state",
         "market_state_code",
         "position",
+        "desired_position",
+        "pending_entry",
+        "pending_exit",
+        "entry_blocked_by_drawdown",
         "guide",
         "atr_stop",
         "tb_take_profit",
@@ -3220,6 +4011,10 @@ def build_outputs(
             "gold_close": "close",
             "market_state": "state",
             "market_state_code": "stateCode",
+            "desired_position": "recommendedPosition",
+            "pending_entry": "pendingEntry",
+            "pending_exit": "pendingExit",
+            "entry_blocked_by_drawdown": "riskHalted",
             "atr_stop": "atrStop",
             "tb_take_profit": "takeProfit",
             "tb_event": "event",
@@ -3262,6 +4057,13 @@ def run_pipeline() -> dict[str, Any]:
         features,
         train_end,
         config.hmm_retrain_every_days,
+        config.hmm_feature_policy,
+    )
+    hmm_diagnostics = state_frame.attrs.get("hmm_diagnostics", [])
+    pd.DataFrame(hmm_diagnostics).to_csv(
+        LOCAL_LOGS / "gold_hmm_stability.csv",
+        index=False,
+        encoding="utf-8-sig",
     )
     features = features.join(state_frame)
     state_dummies = pd.get_dummies(features["market_state_code"], prefix="state", dtype=float)
@@ -3299,6 +4101,13 @@ def run_pipeline() -> dict[str, Any]:
         cost_bps=5.0,
         write_log=False,
     )
+    _, net_5bps_zero_cash_metrics = backtest_next_open(
+        evaluation_signals,
+        test_mask,
+        replace(config, cash_yield_enabled=False),
+        cost_bps=5.0,
+        write_log=False,
+    )
     live_execution_frame, live_execution_metrics = backtest_next_open(
         evaluation_signals,
         test_mask,
@@ -3306,22 +4115,58 @@ def run_pipeline() -> dict[str, Any]:
         cost_bps=config.realistic_cost_bps,
         write_log=True,
     )
-    forward_start = pd.Timestamp(config.forward_holdout_start_date)
-    forward_frame = live_execution_frame.loc[live_execution_frame.index >= forward_start]
-    forward_holdout_metrics = {
-        "start": config.forward_holdout_start_date,
-        "end": str(live_execution_frame.index.max().date()),
-        "days": int(len(forward_frame)),
-        "total_return": float((1 + forward_frame["strategy_ret"].fillna(0)).prod() - 1),
-        "benchmark_return": float((1 + forward_frame["benchmark_ret"].fillna(0)).prod() - 1),
-        "average_position": float(forward_frame["position"].mean()) if len(forward_frame) else 0.0,
-        "trade_days": int((forward_frame["turnover"] > 0).sum()),
+    cost_stress: list[dict[str, float]] = []
+    for cost_bps, metrics in [
+        (0.0, backtest_metrics),
+        (5.0, net_5bps_metrics),
+        (config.realistic_cost_bps, live_execution_metrics),
+    ]:
+        cost_stress.append(
+            {
+                "cost_bps": float(cost_bps),
+                "total_return": float(metrics["total_return"]),
+                "sharpe": float(metrics["sharpe"]),
+                "max_drawdown": float(metrics["max_drawdown"]),
+                "turnover": float(metrics["turnover"]),
+            }
+        )
+    for cost_bps in [15.0, 25.0]:
+        _, stress_metrics = backtest_next_open(
+            evaluation_signals,
+            test_mask,
+            config,
+            cost_bps=cost_bps,
+            write_log=False,
+        )
+        cost_stress.append(
+            {
+                "cost_bps": cost_bps,
+                "total_return": float(stress_metrics["total_return"]),
+                "sharpe": float(stress_metrics["sharpe"]),
+                "max_drawdown": float(stress_metrics["max_drawdown"]),
+                "turnover": float(stress_metrics["turnover"]),
+            }
+        )
+    backtest_robustness = {
+        "sample_role": "reviewed_development_history_not_independent_out_of_sample",
+        "cost_stress": cost_stress,
+        "moving_block_bootstrap": moving_block_bootstrap_summary(live_execution_frame),
     }
+    (LOCAL_LOGS / "gold_backtest_robustness.json").write_text(
+        json.dumps(json_safe(backtest_robustness), ensure_ascii=False, indent=2, allow_nan=False),
+        encoding="utf-8",
+    )
+    public_signals = overlay_execution_state(signals, live_execution_frame)
+    forward_holdout_metrics = update_forward_ledger(live_execution_frame, config)
     backtest_metrics.update(
         {
             "net_total_return_5bps": net_5bps_metrics["total_return"],
             "net_sharpe_5bps": net_5bps_metrics["sharpe"],
             "net_max_drawdown_5bps": net_5bps_metrics["max_drawdown"],
+            "net_total_return_5bps_without_cash_yield": net_5bps_zero_cash_metrics["total_return"],
+            "cash_yield_return_uplift_5bps": (
+                net_5bps_metrics["total_return"] - net_5bps_zero_cash_metrics["total_return"]
+            ),
             "close_research_total_return": close_research_metrics["total_return"],
             "close_research_sharpe": close_research_metrics["sharpe"],
         }
@@ -3333,18 +4178,21 @@ def run_pipeline() -> dict[str, Any]:
         formal_signals=evaluation_signals,
     )
     pd.DataFrame(ablation_metrics).to_csv(LOCAL_LOGS / "gold_ablation.csv", index=False, encoding="utf-8-sig")
-    yearly_backtest_metrics = build_yearly_backtest_report(backtest_frame)
+    yearly_backtest_metrics = build_yearly_backtest_report(
+        live_execution_frame,
+        cost_bps=config.realistic_cost_bps,
+    )
     parameter_stability = run_parameter_stability_report(features, config, validation_mask, test_mask)
     entry_mode_comparison = run_entry_mode_comparison_report(features, config, validation_mask, test_mask)
 
     build_outputs(
-        signals,
-        backtest_frame,
+        public_signals,
+        live_execution_frame,
         backtest_metrics,
         live_execution_metrics,
         forward_holdout_metrics,
         yearly_backtest_metrics,
-        ablation_metrics,
+        backtest_robustness,
         entry_mode_comparison,
         sources,
         state_mapping,
@@ -3352,7 +4200,7 @@ def run_pipeline() -> dict[str, Any]:
         config,
     )
 
-    latest = signals.dropna(subset=["gold_close"]).iloc[-1]
+    latest = public_signals.dropna(subset=["gold_close"]).iloc[-1]
     return {
         "as_of": str(latest.name.date()),
         "price": float(latest["gold_close"]),
@@ -3364,6 +4212,7 @@ def run_pipeline() -> dict[str, Any]:
         "live_execution_metrics": live_execution_metrics,
         "forward_holdout_metrics": forward_holdout_metrics,
         "backtest_yearly": yearly_backtest_metrics,
+        "backtest_robustness": backtest_robustness,
         "parameter_stability": parameter_stability,
         "entry_mode_comparison": entry_mode_comparison,
         "ablation": ablation_metrics,
@@ -3372,11 +4221,14 @@ def run_pipeline() -> dict[str, Any]:
             "ablation_csv": str(LOCAL_LOGS / "gold_ablation.csv"),
             "live_execution_csv": str(LOCAL_LOGS / "gold_live_execution.csv"),
             "backtest_yearly_csv": str(LOCAL_LOGS / "gold_backtest_yearly.csv"),
+            "backtest_robustness_json": str(LOCAL_LOGS / "gold_backtest_robustness.json"),
             "parameter_stability_csv": str(LOCAL_LOGS / "gold_parameter_stability.csv"),
             "entry_mode_comparison_csv": str(LOCAL_LOGS / "gold_entry_mode_comparison.csv"),
+            "hmm_stability_csv": str(LOCAL_LOGS / "gold_hmm_stability.csv"),
             "latest_json": str(PUBLIC_DATA / "gold_research_latest.json"),
             "price_json": str(PUBLIC_DATA / "gold_price_series.json"),
             "backtest_json": str(PUBLIC_DATA / "gold_backtest.json"),
+            "forward_ledger_json": str(FORWARD_LEDGER),
         },
     }
 
