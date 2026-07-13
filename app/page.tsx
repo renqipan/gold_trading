@@ -246,7 +246,7 @@ function EquityChart() {
       <div className="sectionHead">
         <div>
           <p className="eyebrow">开发历史回测 · 8bps 严格执行</p>
-          <h2>成本后策略净值 vs 买入持有</h2>
+          <h2>策略净值 vs 买入持有</h2>
         </div>
         <div className="backtestSummary" aria-label="历史测试回测摘要">
           <span>{start.date} 至 {end.date}</span>
@@ -263,9 +263,8 @@ function EquityChart() {
         <path d={strategyPath} className="equityLine" />
       </svg>
       <div className="legend">
-        <span><i className="legendEquity" />策略（双边 8bps 成本）</span>
+        <span><i className="legendEquity" />策略（买卖各 8bps）</span>
         <span><i className="legendBench" />买入持有</span>
-        <span>该区间已用于研究，仅视为开发样本</span>
       </div>
     </section>
   );
@@ -351,8 +350,7 @@ export default function Home() {
             <h1 className={signalTone}>{guide}</h1>
             <p className="decisionCopy">
               当前 HMM 状态为{latest.marketState}。正式信号由 120 日长期趋势与 CUSUM 事件共同触发，
-              HMM 只负责确认趋势破坏退出。真正前瞻观察自 {latest.forwardHoldoutMetrics.start} 起，
-              当前累计 {latest.forwardHoldoutMetrics.days} 个交易日。
+              HMM 只负责确认趋势破坏退出。
             </p>
             <div className="decisionMeta">
               <span>常态风险 {pct(latest.risk.normal_trend_risk_budget, 0)}</span>
@@ -373,7 +371,7 @@ export default function Home() {
             <MetricCard label={isIntradaySnapshot ? "黄金价格（盘中）" : "黄金收盘价"} value={num(latest.price, 2)} detail={`${priceTimestampLabel} · 日变化 ${pct(oneDay, 2)}`} />
             <MetricCard label="ATR 止损线" value={latest.atrStop ? num(latest.atrStop, 2) : "无"} detail={`止盈 ${latest.risk.profit_atr_multiple.toFixed(0)} ATR · 止损 ${latest.risk.stop_atr_multiple.toFixed(0)} ATR`} />
             <MetricCard label="开发回测 Sharpe" value={num(latest.liveExecutionMetrics.sharpe, 2)} detail={`8bps 净收益 ${pct(latest.liveExecutionMetrics.total_return, 1)}`} />
-            <MetricCard label="最大回撤" value={pct(latest.liveExecutionMetrics.max_drawdown, 1)} detail={`正式策略交易动作 ${latest.liveExecutionMetrics.test_trades}`} />
+            <MetricCard label="最大回撤" value={pct(latest.liveExecutionMetrics.max_drawdown, 1)} detail={`发生换手的交易日 ${latest.liveExecutionMetrics.test_trades}`} />
           </div>
         </div>
       </section>
@@ -432,12 +430,10 @@ export default function Home() {
             </p>
             <p>
               黄金价格采用 {latest.asset}，未投资现金利率采用三个月美债收益率并做保守折减。
-              正式生产模型不再加载未参与信号的 VIX、ETF、CPI 或持仓数据。回测结果受数据源、
-              交易成本、滑点和参数设定影响。
             </p>
             <p>
               任何真实交易都需要结合账户风险承受能力、流动性、保证金规则和独立判断。
-              2023 年后的历史已经被多轮研究查看，不是独立样本外证据；使用者需自行承担投资风险。
+              使用者需自行承担投资风险。
             </p>
           </div>
         </section>

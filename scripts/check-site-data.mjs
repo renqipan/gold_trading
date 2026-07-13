@@ -54,8 +54,13 @@ assertStrictlyIncreasingDates("gold_price_series.json", prices);
 assertStrictlyIncreasingDates("gold_backtest.json", backtest);
 assertStrictlyIncreasingDates("gold_forward_ledger.json records", forwardLedger.records || []);
 for (const row of prices.slice(-360)) {
-  if (!Number.isFinite(row.sma_120)) {
-    throw new Error(`120-day moving average is missing in the visible chart window: ${row.date}`);
+  for (const field of ["close", "sma_5", "sma_20", "sma_60", "sma_120"]) {
+    if (!Number.isFinite(row[field])) {
+      throw new Error(`${field} is missing in the visible chart window: ${row.date}`);
+    }
+  }
+  if (typeof row.state !== "string" || typeof row.stateCode !== "string") {
+    throw new Error(`HMM state is missing in the visible chart window: ${row.date}`);
   }
 }
 if (!latest.liveExecutionMetrics || !Number.isFinite(latest.liveExecutionMetrics.total_return)) {

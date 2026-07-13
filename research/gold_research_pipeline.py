@@ -283,48 +283,16 @@ def append_new_market_rows(
     ).sort_index()
 
 
-def fetch_alternative_market_history(name: str, cached: pd.DataFrame) -> tuple[pd.DataFrame, str]:
-    """Fetch current rows from independent Sina/AkShare endpoints when Eastmoney is down."""
+def fetch_gold_market_history() -> tuple[pd.DataFrame, str]:
+    """Fetch current COMEX GC rows from the production Sina/AkShare endpoint."""
     import akshare as ak
 
-    if name == "gold":
-        fresh = ak.futures_foreign_hist(symbol="GC").copy()
-        source = "AkShare/Sina COMEX gold continuous GC extension"
-    elif name in {"gld", "vixy"}:
-        fresh = ak.stock_us_daily(symbol=name.upper(), adjust="").copy()
-        source = f"AkShare/Sina {name.upper()} daily extension"
-    elif name == "spx":
-        fresh = ak.index_us_stock_sina(symbol=".INX").copy()
-        source = "AkShare/Sina S&P 500 .INX extension"
-    elif name == "us10y":
-        start = (cached.index.max() - pd.Timedelta(days=14)).strftime("%Y%m%d")
-        fresh = ak.bond_zh_us_rate(start_date=start).rename(
-            columns={"日期": "date", "美国国债收益率10年": "close"}
-        )
-        fresh["open"] = fresh["close"]
-        fresh["high"] = fresh["close"]
-        fresh["low"] = fresh["close"]
-        source = "AkShare US Treasury 10Y daily yield extension"
-    elif name == "dxy":
-        uup = ak.stock_us_daily(symbol="UUP", adjust="").copy()
-        uup["date"] = pd.to_datetime(uup["date"], errors="coerce")
-        uup = uup.dropna(subset=["date"]).set_index("date").sort_index()
-        anchor_rows = uup.loc[uup.index <= cached.index.max()]
-        if anchor_rows.empty:
-            return pd.DataFrame(), ""
-        anchor_uup = float(anchor_rows["close"].iloc[-1])
-        anchor_dxy = float(cached["dxy_close"].dropna().iloc[-1])
-        fresh = uup.reset_index()
-        for column in ["open", "high", "low", "close"]:
-            fresh[column] = anchor_dxy * fresh[column] / anchor_uup
-        source = "AkShare/Sina UUP return proxy extension for DXY"
-    else:
-        return pd.DataFrame(), ""
-
+    fresh = ak.futures_foreign_hist(symbol="GC").copy()
+    source = "AkShare/Sina COMEX gold continuous GC extension"
     fresh["date"] = pd.to_datetime(fresh["date"], errors="coerce")
     fresh = fresh.dropna(subset=["date"]).set_index("date").sort_index()
     keep = [column for column in ["open", "close", "high", "low", "volume", "amount"] if column in fresh]
-    fresh = fresh[keep].rename(columns={column: f"{name}_{column}" for column in keep})
+    fresh = fresh[keep].rename(columns={column: f"gold_{column}" for column in keep})
     return fresh, source
 
 
@@ -353,7 +321,7 @@ def load_market_data() -> tuple[pd.DataFrame, dict[str, str]]:
     gold_refreshed = False
     if not OFFLINE_MODE:
         try:
-            fresh_gold, live_source = fetch_alternative_market_history("gold", cached_gold)
+            fresh_gold, live_source = fetch_gold_market_history()
             gold = append_new_market_rows(
                 cached_gold,
                 fresh_gold,
@@ -829,9 +797,8 @@ def make_meta_events(frame: pd.DataFrame, signal: pd.Series, config: RiskConfig)
 def generate_signals(
     frame: pd.DataFrame,
     config: RiskConfig,
-    *,
-    start_at: pd.Timestamp | None = None,
 ) -> pd.DataFrame:
+    """Build close-known inputs consumed by the strict next-open execution ledger."""
     signal_frame = frame.copy()
     primary_signal = primary_long_signal(signal_frame)
     events = make_meta_events(signal_frame, primary_signal, config)
@@ -853,128 +820,6 @@ def generate_signals(
         config.strong_trend_risk_budget,
         config.normal_trend_risk_budget if config.dynamic_trend_risk_enabled else config.max_single_loss,
     )
-
-    positions = []
-    stop_prices = []
-    take_profit_prices = []
-    execution_actions = []
-    exit_reasons = []
-    raw_signals = []
-    guides = []
-    fill_prices = []
-    in_position = False
-    current_position = 0.0
-    stop_price = np.nan
-    take_profit_price = np.nan
-    hmm_exit_streak = 0
-    accepted_arr = events.reindex(signal_frame.index).fillna(False).to_numpy()
-
-    for i, row in enumerate(signal_frame.itertuples()):
-        action = "持有/观望"
-        raw_signal = "hold"
-        guide = "持有/观望"
-        exit_reason = ""
-        fill_price = np.nan
-        exited_this_bar = False
-        close = row.gold_close
-        high = row.gold_high
-        low = row.gold_low
-        atr = row.atr
-        flat_condition = (not bool(row.primary_trend_signal)) or (
-            (row.gold_close < row.sma_60) and row.market_state in ["熊市", "恐慌"]
-        )
-
-        if start_at is not None and row.Index < start_at:
-            positions.append(0.0)
-            stop_prices.append(np.nan)
-            take_profit_prices.append(np.nan)
-            execution_actions.append("持有/观望")
-            exit_reasons.append("")
-            raw_signals.append("flat")
-            guides.append("卖出/空仓")
-            fill_prices.append(np.nan)
-            continue
-
-        if in_position:
-            hit_profit = (
-                config.atr_profit_enabled
-                and np.isfinite(take_profit_price)
-                and high >= take_profit_price
-            )
-            hit_stop = (
-                config.atr_stop_enabled
-                and np.isfinite(stop_price)
-                and low <= stop_price
-            )
-            hmm_exit_setup = row.market_state in ["熊市", "恐慌"] and close < row.sma_60
-            hmm_exit_streak = hmm_exit_streak + 1 if hmm_exit_setup else 0
-            hmm_exit = config.hmm_exit_enabled and hmm_exit_streak >= config.hmm_exit_confirmation_days
-            if hit_stop or hit_profit or hmm_exit:
-                if hit_stop:
-                    fill_price = min(float(row.gold_open), stop_price) if np.isfinite(row.gold_open) else stop_price
-                elif hit_profit:
-                    fill_price = max(float(row.gold_open), take_profit_price) if np.isfinite(row.gold_open) else take_profit_price
-                else:
-                    fill_price = close
-                in_position = False
-                current_position = 0.0
-                stop_price = np.nan
-                take_profit_price = np.nan
-                hmm_exit_streak = 0
-                exited_this_bar = True
-                action = "卖出"
-                raw_signal = "flat"
-                guide = "卖出/空仓"
-                if hit_stop:
-                    exit_reason = "atr_stop"
-                elif hit_profit:
-                    exit_reason = "atr_take_profit"
-                else:
-                    exit_reason = "hmm_trend_exit"
-            else:
-                action = "持有"
-                guide = "持有"
-
-        if not in_position and not exited_this_bar and accepted_arr[i] and np.isfinite(atr):
-            in_position = True
-            current_position = risk_position_size(close, atr, config, trend_risk_budget(row, config))
-            fill_price = close
-            stop_price = (
-                close - config.stop_atr_multiple * atr
-                if config.atr_stop_enabled
-                else np.nan
-            )
-            take_profit_price = (
-                close + config.profit_atr_multiple * atr
-                if config.atr_profit_enabled
-                else np.nan
-            )
-            hmm_exit_streak = 0
-            action = "买入"
-            raw_signal = "long"
-            guide = "买入"
-        elif not in_position and action != "卖出":
-            current_position = 0.0
-            raw_signal = "flat" if flat_condition else "hold"
-            guide = "卖出/空仓" if flat_condition else "持有/观望"
-
-        positions.append(current_position if in_position else 0.0)
-        stop_prices.append(stop_price if in_position else np.nan)
-        take_profit_prices.append(take_profit_price if in_position else np.nan)
-        execution_actions.append(action)
-        exit_reasons.append(exit_reason)
-        raw_signals.append(raw_signal)
-        guides.append(guide)
-        fill_prices.append(fill_price)
-
-    signal_frame["position"] = positions
-    signal_frame["atr_stop"] = stop_prices
-    signal_frame["tb_take_profit"] = take_profit_prices
-    signal_frame["execution_action"] = execution_actions
-    signal_frame["exit_reason"] = exit_reasons
-    signal_frame["raw_signal"] = raw_signals
-    signal_frame["guide"] = guides
-    signal_frame["fill_price"] = fill_prices
     return signal_frame
 
 def backtest_next_open(
@@ -1720,7 +1565,7 @@ def build_outputs(
             f"训练和验证截止日已经冻结；{config.forward_holdout_start_date} 之后的新数据作为 forward holdout，不回流到历史参数选择。",
             f"HMM 使用 expanding walk-forward，并约每 {config.hmm_retrain_every_days} 个交易日重训一次，所有状态概率只使用当时可得数据。",
             f"入场仓位按 ATR 止损距离缩放：普通趋势风险预算 {config.normal_trend_risk_budget:.0%}，120 日收益达到 {config.strong_trend_ret_120_threshold:.0%} 的强趋势预算 {config.strong_trend_risk_budget:.0%}；隔夜跳空可能使实际损失超过计划值。",
-            "实盘模拟使用 t 日收盘信号、t+1 日开盘成交、盘中 ATR 障碍、双边交易成本和回撤降仓约束。",
+            "实盘模拟使用 t 日收盘信号、t+1 日开盘成交、盘中 ATR 障碍、买卖两侧各自计入交易成本，并应用回撤降仓约束。",
             "网站主回测采用次日开盘事件驱动口径；盘中障碍按障碍价成交，隔夜跳空穿越障碍按开盘价成交。",
             "部分仓位回测使用现金与黄金持仓单位逐日盯市，不假设开盘免费再平衡。",
             f"未投资现金按上一可得日 FRED DGS3MO 三个月美债收益率计息，并保守扣减 {config.cash_yield_haircut_bps:.0f}bps；现金利息与黄金择时收益分开披露。",
@@ -1811,35 +1656,29 @@ def run_pipeline() -> dict[str, Any]:
     features = features.join(state_frame)
 
     signals = generate_signals(features, config)
-    test_start = features.index[test_mask].min()
-    evaluation_signals = generate_signals(
-        features,
-        config,
-        start_at=test_start,
-    )
     backtest_frame, backtest_metrics = backtest_next_open(
-        evaluation_signals,
+        signals,
         test_mask,
         config,
         cost_bps=0.0,
         write_log=False,
     )
     _, net_5bps_metrics = backtest_next_open(
-        evaluation_signals,
+        signals,
         test_mask,
         config,
         cost_bps=5.0,
         write_log=False,
     )
     _, net_5bps_zero_cash_metrics = backtest_next_open(
-        evaluation_signals,
+        signals,
         test_mask,
         replace(config, cash_yield_enabled=False),
         cost_bps=5.0,
         write_log=False,
     )
     live_execution_frame, live_execution_metrics = backtest_next_open(
-        evaluation_signals,
+        signals,
         test_mask,
         config,
         cost_bps=config.realistic_cost_bps,
@@ -1862,7 +1701,7 @@ def run_pipeline() -> dict[str, Any]:
         )
     for cost_bps in [15.0, 25.0]:
         _, stress_metrics = backtest_next_open(
-            evaluation_signals,
+            signals,
             test_mask,
             config,
             cost_bps=cost_bps,

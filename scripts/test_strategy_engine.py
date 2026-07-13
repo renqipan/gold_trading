@@ -106,6 +106,24 @@ def test_primary_signal_uses_only_the_adopted_long_term_trend() -> None:
     assert primary_long_signal(frame).tolist() == [False, True, True]
 
 
+def test_signal_builder_has_no_legacy_close_execution_state() -> None:
+    frame = execution_frame(80)
+    frame["sma_20"] = 95.0
+    signals = pipeline.generate_signals(frame, RiskConfig())
+    assert {"tb_event", "tb_accepted_event", "primary_trend_signal"}.issubset(signals.columns)
+    retired = {
+        "position",
+        "atr_stop",
+        "tb_take_profit",
+        "execution_action",
+        "exit_reason",
+        "raw_signal",
+        "guide",
+        "fill_price",
+    }
+    assert retired.isdisjoint(signals.columns)
+
+
 def test_long_only_unlevered_config_is_enforced() -> None:
     for kwargs in [
         {"long_only": False},
@@ -529,6 +547,7 @@ if __name__ == "__main__":
     test_dynamic_trend_risk_budget()
     test_partial_position_uses_cash_and_units_without_free_rebalancing()
     test_primary_signal_uses_only_the_adopted_long_term_trend()
+    test_signal_builder_has_no_legacy_close_execution_state()
     test_long_only_unlevered_config_is_enforced()
     test_signal_executes_only_at_next_open_and_last_signal_remains_pending()
     test_hmm_confirmation_resets_after_exit_and_can_be_disabled()
