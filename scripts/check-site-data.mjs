@@ -35,6 +35,17 @@ const latest = readJson("public/data/gold_research_latest.json");
 const prices = readJson("public/data/gold_price_series.json");
 const backtest = readJson("public/data/gold_backtest.json");
 const forwardLedger = readJson("public/data/gold_forward_ledger.json");
+const shanghaiToday = new Date().toLocaleDateString("sv-SE", { timeZone: "Asia/Shanghai" });
+const shanghaiHour = Number(
+  new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Shanghai",
+    hour: "2-digit",
+    hourCycle: "h23",
+  }).format(new Date()),
+);
+const confirmedThroughDate = new Date(`${shanghaiToday}T00:00:00Z`);
+confirmedThroughDate.setUTCDate(confirmedThroughDate.getUTCDate() - (shanghaiHour >= 8 ? 1 : 2));
+const confirmedThrough = confirmedThroughDate.toISOString().slice(0, 10);
 
 if (!prices.length) throw new Error("gold_price_series.json is empty");
 if (!backtest.length) throw new Error("gold_backtest.json is empty");
@@ -49,6 +60,18 @@ for (const row of prices.slice(-360)) {
 }
 if (!latest.liveExecutionMetrics || !Number.isFinite(latest.liveExecutionMetrics.total_return)) {
   throw new Error("latest.liveExecutionMetrics is missing");
+}
+if (!latest.priceStatus || typeof latest.priceStatus.isFinal !== "boolean") {
+  throw new Error("latest.priceStatus is missing");
+}
+assertEqual("latest.priceStatus.sessionDate", latest.priceStatus.sessionDate, latest.asOf);
+assertEqual("latest.priceStatus.timezone", latest.priceStatus.timezone, "Asia/Shanghai");
+assertEqual("latest.priceStatus.isFinal", latest.priceStatus.isFinal, latest.asOf <= confirmedThrough);
+if (latest.asOf > shanghaiToday) {
+  throw new Error(`latest.asOf cannot be in the future: ${latest.asOf}`);
+}
+if (!Number.isFinite(Date.parse(latest.priceStatus.observedAt))) {
+  throw new Error("latest.priceStatus.observedAt is invalid");
 }
 for (const field of ["ablation", "entryModeComparison", "modelMetrics", "modelValidation"]) {
   if (field in latest) throw new Error(`retired research field must not be published: ${field}`);

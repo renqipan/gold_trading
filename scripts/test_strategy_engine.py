@@ -398,18 +398,19 @@ def test_forward_ledger_is_append_only() -> None:
         index=index,
     )
     original_path = pipeline.FORWARD_LEDGER
+    final_status = {"isFinal": True, "sessionDate": "2026-07-14"}
     try:
         with tempfile.TemporaryDirectory() as directory:
             pipeline.FORWARD_LEDGER = Path(directory) / "forward.json"
-            metrics = update_forward_ledger(execution, RiskConfig())
+            metrics = update_forward_ledger(execution, RiskConfig(), final_status)
             assert metrics["days"] == 2
-            replay = update_forward_ledger(execution.copy(), RiskConfig())
+            replay = update_forward_ledger(execution.copy(), RiskConfig(), final_status)
             assert replay["days"] == 2
 
             changed = execution.copy()
             changed.loc[index[0], "strategy_ret"] = 0.02
             try:
-                update_forward_ledger(changed, RiskConfig())
+                update_forward_ledger(changed, RiskConfig(), final_status)
             except RuntimeError as exc:
                 assert "history changed" in str(exc)
             else:
@@ -444,11 +445,84 @@ def test_empty_forward_ledger_allows_fingerprint_migration() -> None:
                 '"appendOnly":true,"records":[]}',
                 encoding="utf-8",
             )
-            metrics = update_forward_ledger(execution, RiskConfig())
+            metrics = update_forward_ledger(
+                execution,
+                RiskConfig(),
+                {"isFinal": True, "sessionDate": "2026-07-13"},
+            )
             assert metrics["days"] == 0
             assert metrics["config_fingerprint"] != "legacy-empty-ledger"
     finally:
         pipeline.FORWARD_LEDGER = original_path
+
+
+def test_intraday_snapshot_is_not_frozen_in_forward_ledger() -> None:
+    execution = pd.DataFrame(
+        {
+            "strategy_ret": [0.01],
+            "benchmark_ret": [0.008],
+            "position": [0.0],
+            "desired_position": [0.0],
+            "turnover": [0.0],
+            "cash_interest": [0.0001],
+            "execution_action": ["持有/观望"],
+            "guide": ["卖出/空仓"],
+            "pending_entry": [False],
+            "pending_exit": [False],
+        },
+        index=pd.DatetimeIndex(["2026-07-13"]),
+    )
+    original_path = pipeline.FORWARD_LEDGER
+    try:
+        with tempfile.TemporaryDirectory() as directory:
+            pipeline.FORWARD_LEDGER = Path(directory) / "forward.json"
+            provisional = update_forward_ledger(
+                execution,
+                RiskConfig(),
+                {"isFinal": False, "sessionDate": "2026-07-13"},
+            )
+            assert provisional["days"] == 0
+
+            finalized = update_forward_ledger(
+                execution,
+                RiskConfig(),
+                {"isFinal": True, "sessionDate": "2026-07-13"},
+            )
+            assert finalized["days"] == 1
+    finally:
+        pipeline.FORWARD_LEDGER = original_path
+
+
+def test_alternative_quote_refreshes_only_provisional_tail() -> None:
+    index = pd.DatetimeIndex(["2026-07-10", "2026-07-13"])
+    cached = pd.DataFrame(
+        {"gold_open": [4000.0, 4050.0], "gold_close": [4040.0, 4070.0]},
+        index=index,
+    )
+    fresh = pd.DataFrame(
+        {"gold_open": [4052.0], "gold_close": [4128.4]},
+        index=pd.DatetimeIndex(["2026-07-13"]),
+    )
+    original_status_builder = pipeline.build_price_status
+    try:
+        pipeline.build_price_status = lambda _date: {"isFinal": False}
+        refreshed = pipeline.append_new_market_rows(
+            cached,
+            fresh,
+            refresh_provisional_tail=True,
+        )
+        assert refreshed.loc[pd.Timestamp("2026-07-10"), "gold_close"] == 4040.0
+        assert refreshed.loc[pd.Timestamp("2026-07-13"), "gold_close"] == 4128.4
+
+        pipeline.build_price_status = lambda _date: {"isFinal": True}
+        finalized = pipeline.append_new_market_rows(
+            cached,
+            fresh,
+            refresh_provisional_tail=True,
+        )
+        assert finalized.loc[pd.Timestamp("2026-07-13"), "gold_close"] == 4070.0
+    finally:
+        pipeline.build_price_status = original_status_builder
 
 
 if __name__ == "__main__":
@@ -467,4 +541,6 @@ if __name__ == "__main__":
     test_public_state_overlay_uses_strict_execution_ledger()
     test_forward_ledger_is_append_only()
     test_empty_forward_ledger_allows_fingerprint_migration()
+    test_intraday_snapshot_is_not_frozen_in_forward_ledger()
+    test_alternative_quote_refreshes_only_provisional_tail()
     print("strategy engine tests passed")

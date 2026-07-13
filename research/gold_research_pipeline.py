@@ -158,6 +158,23 @@ def write_json_atomic(path: Path, payload: Any, *, indent: int | None = None) ->
     os.replace(temporary, path)
 
 
+def build_price_status(latest_date: pd.Timestamp) -> dict[str, Any]:
+    """Describe whether the newest quote is a settled daily bar or a live intraday snapshot."""
+    session_date = pd.Timestamp(latest_date).date()
+    shanghai_now = pd.Timestamp.now(tz="Asia/Shanghai")
+    settlement_lag_days = 1 if shanghai_now.hour >= 8 else 2
+    confirmed_through = (shanghai_now.normalize() - pd.Timedelta(days=settlement_lag_days)).date()
+    is_final = session_date <= confirmed_through
+    return {
+        "kind": "confirmed_daily_close" if is_final else "intraday_snapshot",
+        "isFinal": is_final,
+        "sessionDate": str(session_date),
+        "observedAt": pd.Timestamp.now(tz="UTC").isoformat(),
+        "timezone": "Asia/Shanghai",
+        "settlementRule": "COMEX session is treated as final after 08:00 Asia/Shanghai on the next calendar day",
+    }
+
+
 def random_request_pause(attempt: int) -> None:
     if attempt == 0:
         time.sleep(random.uniform(0.20, 0.70))
@@ -586,16 +603,30 @@ def load_cached_csv(path: Path) -> pd.DataFrame:
     return frame.set_index("date").sort_index()
 
 
-def append_new_market_rows(cached: pd.DataFrame, fresh: pd.DataFrame) -> pd.DataFrame:
-    """Append only dates beyond the cache, preserving the original historical vendor."""
+def append_new_market_rows(
+    cached: pd.DataFrame,
+    fresh: pd.DataFrame,
+    *,
+    refresh_provisional_tail: bool = False,
+) -> pd.DataFrame:
+    """Append new dates and optionally refresh only the still-provisional tail date."""
     if cached.empty or fresh.empty:
         return cached if fresh.empty else fresh
+    merged = cached.copy()
+    tail_date = cached.index.max()
+    if (
+        refresh_provisional_tail
+        and tail_date in fresh.index
+        and build_price_status(tail_date)["isFinal"] is False
+    ):
+        common_columns = cached.columns.intersection(fresh.columns)
+        merged.loc[tail_date, common_columns] = fresh.loc[tail_date, common_columns]
     new_rows = fresh.loc[fresh.index > cached.index.max()].copy()
     if new_rows.empty:
-        return cached
-    all_columns = cached.columns.union(new_rows.columns)
+        return merged
+    all_columns = merged.columns.union(new_rows.columns)
     return pd.concat(
-        [cached.reindex(columns=all_columns), new_rows.reindex(columns=all_columns)]
+        [merged.reindex(columns=all_columns), new_rows.reindex(columns=all_columns)]
     ).sort_index()
 
 
@@ -821,7 +852,11 @@ def load_market_data() -> tuple[pd.DataFrame, dict[str, str]]:
                 if not OFFLINE_MODE:
                     try:
                         fresh, alternative_source = fetch_alternative_market_history(name, cached)
-                        cached = append_new_market_rows(cached, fresh)
+                        cached = append_new_market_rows(
+                            cached,
+                            fresh,
+                            refresh_provisional_tail=name == "gold",
+                        )
                         if alternative_source:
                             source_metadata[name] = alternative_source
                     except Exception as alternative_exc:
@@ -833,7 +868,7 @@ def load_market_data() -> tuple[pd.DataFrame, dict[str, str]]:
                 sources[name] = f"Eastmoney {secid}: {description} (cached fallback after refresh failure)"
                 persisted_alternative = alternative_source or source_metadata.get(name, "")
                 if persisted_alternative:
-                    sources[name] += f"; appended with {persisted_alternative}"
+                    sources[name] += f"; refreshed with {persisted_alternative}"
                 if repaired_rows:
                     sources[name] += f"; OHLC repaired rows={repaired_rows}"
                 print(f"[warn] {name} refresh unavailable; using cached Eastmoney data")
@@ -2201,12 +2236,16 @@ def formal_strategy_fingerprint(config: RiskConfig) -> str:
 def update_forward_ledger(
     execution_frame: pd.DataFrame,
     config: RiskConfig,
+    price_status: dict[str, Any],
 ) -> dict[str, Any]:
-    """Validate immutable forward records and append only newly observed trading days."""
+    """Validate immutable forward records and append only completed trading days."""
     ensure_dirs()
     fingerprint = formal_strategy_fingerprint(config)
     forward_start = pd.Timestamp(config.forward_holdout_start_date)
     candidate_frame = execution_frame.loc[execution_frame.index >= forward_start]
+    if price_status["isFinal"] is False:
+        provisional_date = pd.Timestamp(price_status["sessionDate"])
+        candidate_frame = candidate_frame.loc[candidate_frame.index < provisional_date]
     candidate_records: list[dict[str, Any]] = []
     for date, row in candidate_frame.iterrows():
         candidate_records.append(
@@ -2308,6 +2347,7 @@ def build_outputs(
     state_mapping: dict[int, str],
     data_quality: dict[str, Any],
     config: RiskConfig,
+    price_status: dict[str, Any],
 ) -> None:
     ensure_dirs()
 
@@ -2356,8 +2396,9 @@ def build_outputs(
     latest_json = {
         "asOf": str(latest.name.date()),
         "asset": "COMEX 迷你黄金连续合约 QO00Y",
-        "assetDetail": "东方财富国际期货 secid=101.QO00Y，作为黄金价格主序列",
+        "assetDetail": "东方财富 101.QO00Y 为历史主序列；主接口失败时，仅用同一 COMEX 黄金 GC 行情刷新尚未定稿的盘中尾部",
         "price": float(latest["gold_close"]),
+        "priceStatus": price_status,
         "dailyChange": float(latest["gold_close"] / previous["gold_close"] - 1),
         "isMetaEvent": bool(latest["tb_event"]),
         "isAcceptedEvent": bool(latest["tb_accepted_event"]),
@@ -2394,6 +2435,7 @@ def build_outputs(
             "FOMC 事件来自美联储会议日历，作为事件日和 proximity 特征。",
             "正式算法只运行已采纳的趋势、CUSUM、ATR 和 walk-forward HMM 规则，不包含候选策略或分类预测路径。",
             "网站持仓、止损、止盈和待执行动作统一来自正式次日开盘执行账本，不再使用独立的收盘成交状态机。",
+            "若最新交易日尚未收盘，网站使用程序运行时取得的最新价格计算当日模型快照，并明确标注为盘中数据；前瞻账本仍只记录已结束交易日。",
             f"HMM 固定使用初始训练期可用的 {config.hmm_feature_policy} 特征集合，后续重训不允许因数据源变长而改变模型维度。",
             f"训练和验证截止日已经冻结；{config.forward_holdout_start_date} 之后的新数据作为 forward holdout，不回流到历史参数选择。",
             f"HMM 使用 expanding walk-forward，并约每 {config.hmm_retrain_every_days} 个交易日重训一次，所有状态概率只使用当时可得数据。",
@@ -2565,7 +2607,9 @@ def run_pipeline() -> dict[str, Any]:
         encoding="utf-8",
     )
     public_signals = overlay_execution_state(signals, live_execution_frame)
-    forward_holdout_metrics = update_forward_ledger(live_execution_frame, config)
+    latest_signal_date = public_signals.dropna(subset=["gold_close"]).index[-1]
+    price_status = build_price_status(latest_signal_date)
+    forward_holdout_metrics = update_forward_ledger(live_execution_frame, config, price_status)
     backtest_metrics.update(
         {
             "net_total_return_5bps": net_5bps_metrics["total_return"],
@@ -2594,6 +2638,7 @@ def run_pipeline() -> dict[str, Any]:
         state_mapping,
         data_quality,
         config,
+        price_status,
     )
 
     latest = public_signals.dropna(subset=["gold_close"]).iloc[-1]

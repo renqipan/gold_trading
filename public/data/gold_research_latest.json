@@ -1,9 +1,17 @@
 {
-  "asOf": "2026-07-10",
+  "asOf": "2026-07-13",
   "asset": "COMEX 迷你黄金连续合约 QO00Y",
-  "assetDetail": "东方财富国际期货 secid=101.QO00Y，作为黄金价格主序列",
-  "price": 4128.4,
-  "dailyChange": -0.0009679605072112629,
+  "assetDetail": "东方财富 101.QO00Y 为历史主序列；主接口失败时，仅用同一 COMEX 黄金 GC 行情刷新尚未定稿的盘中尾部",
+  "price": 4068.8,
+  "priceStatus": {
+    "kind": "intraday_snapshot",
+    "isFinal": false,
+    "sessionDate": "2026-07-13",
+    "observedAt": "2026-07-13T11:16:26.132909+00:00",
+    "timezone": "Asia/Shanghai",
+    "settlementRule": "COMEX session is treated as final after 08:00 Asia/Shanghai on the next calendar day"
+  },
+  "dailyChange": -0.014042527412612804,
   "isMetaEvent": false,
   "isAcceptedEvent": false,
   "marketStateCode": "s2",
@@ -17,7 +25,7 @@
   "riskHalted": false,
   "atrStop": null,
   "takeProfit": null,
-  "atrPct": 0.025148103035420144,
+  "atrPct": 0.02460184821077467,
   "risk": {
     "train_end_date": "2021-02-23",
     "validation_end_date": "2023-02-27",
@@ -54,54 +62,54 @@
     "execution_model": "t_close_signal_t_plus_1_open_with_intraday_atr_fills",
     "cost_bps": 0.0,
     "sharpe_definition": "annualized_excess_return_over_lagged_haircut_cash_yield",
-    "total_return": 1.9864618587913943,
-    "benchmark_return": 1.251342876618951,
-    "annual_return": 0.37438342512196066,
-    "annual_vol": 0.1683295939891357,
-    "sharpe": 1.7343566912485047,
-    "sortino": 3.0681353349256044,
-    "calmar": 3.4404833955962304,
+    "total_return": 1.9872660427953481,
+    "benchmark_return": 1.2188411724608046,
+    "annual_return": 0.37398738636557005,
+    "annual_vol": 0.16823344052576816,
+    "sharpe": 1.733346570962055,
+    "sortino": 3.0658571101350294,
+    "calmar": 3.4368439055068105,
     "max_drawdown": -0.10881709982997334,
-    "benchmark_annual_vol": 0.1986458080948599,
-    "benchmark_sharpe": 1.0846435891882338,
-    "benchmark_max_drawdown": -0.2573066432434943,
-    "active_day_ratio": 0.9250288350634371,
-    "daily_win_rate_when_active": 0.5694444444444444,
+    "benchmark_annual_vol": 0.19869637128689313,
+    "benchmark_sharpe": 1.0616091719681358,
+    "benchmark_max_drawdown": -0.2572696592852862,
+    "active_day_ratio": 0.923963133640553,
+    "daily_win_rate_when_active": 0.5699421965317919,
     "test_trades": 22,
     "entries": 11,
     "exits": 11,
     "turnover": 20.87991513960384,
     "drawdown_scaled_days": 0,
-    "cash_interest_earned": 0.03166687818163215,
-    "net_total_return_5bps": 1.9555942020078207,
-    "net_sharpe_5bps": 1.7173207470134122,
+    "cash_interest_earned": 0.03247106218558596,
+    "net_total_return_5bps": 1.956390074077118,
+    "net_sharpe_5bps": 1.7163207797265376,
     "net_max_drawdown_5bps": -0.10881709982997334,
     "net_total_return_5bps_without_cash_yield": 1.9206196020809436,
-    "cash_yield_return_uplift_5bps": 0.034974599926877126
+    "cash_yield_return_uplift_5bps": 0.03577047199617445
   },
   "liveExecutionMetrics": {
     "execution_model": "t_close_signal_t_plus_1_open_with_intraday_atr_fills",
     "cost_bps": 8.0,
     "sharpe_definition": "annualized_excess_return_over_lagged_haircut_cash_yield",
-    "total_return": 1.9372254955473371,
-    "benchmark_return": 1.251342876618951,
-    "annual_return": 0.3677586005455731,
-    "annual_vol": 0.1681747919390588,
-    "sharpe": 1.7070515697571311,
-    "sortino": 3.013027126286333,
-    "calmar": 3.379603032245815,
+    "total_return": 1.9380164213556044,
+    "benchmark_return": 1.2188411724608046,
+    "annual_return": 0.3673720824707307,
+    "annual_vol": 0.16807869399214043,
+    "sharpe": 1.7060577193364754,
+    "sortino": 3.0107894387418086,
+    "calmar": 3.376051034669641,
     "max_drawdown": -0.10881709982997323,
-    "benchmark_annual_vol": 0.1986458080948599,
-    "benchmark_sharpe": 1.0846435891882338,
-    "benchmark_max_drawdown": -0.2573066432434943,
-    "active_day_ratio": 0.9250288350634371,
-    "daily_win_rate_when_active": 0.5694444444444444,
+    "benchmark_annual_vol": 0.19869637128689313,
+    "benchmark_sharpe": 1.0616091719681358,
+    "benchmark_max_drawdown": -0.2572696592852862,
+    "active_day_ratio": 0.923963133640553,
+    "daily_win_rate_when_active": 0.5699421965317919,
     "test_trades": 22,
     "entries": 11,
     "exits": 11,
     "turnover": 20.873544100686022,
     "drawdown_scaled_days": 0,
-    "cash_interest_earned": 0.031207178006887167
+    "cash_interest_earned": 0.03199810381515461
   },
   "forwardHoldoutMetrics": {
     "start": "2026-07-13",
@@ -150,11 +158,11 @@
     {
       "year": 2026,
       "cost_bps": 8.0,
-      "total_return": 0.2563995380220352,
-      "benchmark_return": -0.04633864633864859,
-      "sharpe": 2.3258158638306665,
+      "total_return": 0.25673785689527917,
+      "benchmark_return": -0.06010626010626219,
+      "sharpe": 2.317128647106321,
       "max_drawdown": -0.10001790497497909,
-      "average_position": 0.45654749061766337,
+      "average_position": 0.4531905237748864,
       "turnover": 5.813827693793888
     }
   ],
@@ -163,36 +171,36 @@
     "cost_stress": [
       {
         "cost_bps": 0.0,
-        "total_return": 1.9864618587913943,
-        "sharpe": 1.7343566912485047,
+        "total_return": 1.9872660427953481,
+        "sharpe": 1.733346570962055,
         "max_drawdown": -0.10881709982997334,
         "turnover": 20.87991513960384
       },
       {
         "cost_bps": 5.0,
-        "total_return": 1.9555942020078207,
-        "sharpe": 1.7173207470134122,
+        "total_return": 1.956390074077118,
+        "sharpe": 1.7163207797265376,
         "max_drawdown": -0.10881709982997334,
         "turnover": 20.87593176742489
       },
       {
         "cost_bps": 8.0,
-        "total_return": 1.9372254955473371,
-        "sharpe": 1.7070515697571311,
+        "total_return": 1.9380164213556044,
+        "sharpe": 1.7060577193364754,
         "max_drawdown": -0.10881709982997323,
         "turnover": 20.873544100686022
       },
       {
         "cost_bps": 15.0,
-        "total_return": 1.894803671968202,
-        "sharpe": 1.6829546135431377,
+        "total_return": 1.8955831745761897,
+        "sharpe": 1.681975106873429,
         "max_drawdown": -0.10881709982997323,
         "turnover": 20.86797974293005
       },
       {
         "cost_bps": 25.0,
-        "total_return": 1.835251543910612,
-        "sharpe": 1.6482122418356473,
+        "total_return": 1.8360150105298447,
+        "sharpe": 1.6472533920617092,
         "max_drawdown": -0.10881709982997323,
         "turnover": 20.860047303619293
       }
@@ -205,22 +213,22 @@
       "simulations": 2000,
       "seed": 20260713,
       "total_return": {
-        "p05": 0.7115569047582552,
-        "median": 1.873762228262377,
-        "p95": 4.164554697204247
+        "p05": 0.6913315309538366,
+        "median": 1.870863712198378,
+        "p95": 4.125385831298724
       },
       "sharpe": {
-        "p05": 0.79454603446819,
-        "median": 1.68000259780061,
-        "p95": 2.6143542261512014
+        "p05": 0.765445626493464,
+        "median": 1.6648442622197581,
+        "p95": 2.6018393811425007
       },
       "max_drawdown": {
-        "p05": -0.19713428374997938,
-        "median": -0.12690515529807078,
-        "p95": -0.09193863485069313
+        "p05": -0.19822222509408588,
+        "median": -0.12813009263075664,
+        "p95": -0.0924560661522923
       },
       "probability_positive_total_return": 1.0,
-      "probability_positive_sharpe": 0.9995
+      "probability_positive_sharpe": 1.0
     }
   },
   "stateMapping": {
@@ -230,12 +238,12 @@
     "3": "恐慌"
   },
   "sources": {
-    "gold": "Eastmoney 101.QO00Y: COMEX mini gold continuous proxy (cached fallback after refresh failure); appended with AkShare/Sina COMEX gold continuous GC extension",
-    "dxy": "Eastmoney 100.UDI: US Dollar Index (cached fallback after refresh failure); appended with AkShare/Sina UUP return proxy extension for DXY",
-    "us10y": "Eastmoney 171.US10Y: US 10Y Treasury yield (cached fallback after refresh failure); appended with AkShare US Treasury 10Y daily yield extension; OHLC repaired rows=1",
-    "gld": "Eastmoney 107.GLD: SPDR Gold Shares ETF (cached fallback after refresh failure); appended with AkShare/Sina GLD daily extension",
-    "vixy": "Eastmoney 107.VIXY: VIX futures ETF proxy (cached fallback after refresh failure); appended with AkShare/Sina VIXY daily extension",
-    "spx": "Eastmoney 100.SPX: S&P 500 index (cached fallback after refresh failure); appended with AkShare/Sina S&P 500 .INX extension",
+    "gold": "Eastmoney 101.QO00Y: COMEX mini gold continuous proxy (cached fallback after refresh failure); refreshed with AkShare/Sina COMEX gold continuous GC extension",
+    "dxy": "Eastmoney 100.UDI: US Dollar Index (cached fallback after refresh failure); refreshed with AkShare/Sina UUP return proxy extension for DXY",
+    "us10y": "Eastmoney 171.US10Y: US 10Y Treasury yield (cached fallback after refresh failure); refreshed with AkShare US Treasury 10Y daily yield extension; OHLC repaired rows=2",
+    "gld": "Eastmoney 107.GLD: SPDR Gold Shares ETF (cached fallback after refresh failure); refreshed with AkShare/Sina GLD daily extension",
+    "vixy": "Eastmoney 107.VIXY: VIX futures ETF proxy (cached fallback after refresh failure); refreshed with AkShare/Sina VIXY daily extension",
+    "spx": "Eastmoney 100.SPX: S&P 500 index (cached fallback after refresh failure); refreshed with AkShare/Sina S&P 500 .INX extension",
     "cpi": "cached CPI YoY with point-in-time release lag",
     "cot": "cached CFTC gold positioning with release lag",
     "cftc_managed_money": "CFTC official disaggregated futures-only COT; gold managed money; shifted +3 calendar days",
@@ -255,51 +263,51 @@
     "gold_etf_net_flow": "proxy only: GLD signed dollar volume flow from traded price and amount; not official ETF creations/redemptions"
   },
   "dataQuality": {
-    "generatedAt": "2026-07-12T14:25:44Z",
-    "referenceDate": "2026-07-12",
+    "generatedAt": "2026-07-13T11:16:23Z",
+    "referenceDate": "2026-07-13",
     "passed": true,
     "assetIdentity": {
       "expected": "COMEX gold continuous proxy in USD per troy ounce",
-      "source": "Eastmoney 101.QO00Y: COMEX mini gold continuous proxy (cached fallback after refresh failure); appended with AkShare/Sina COMEX gold continuous GC extension",
+      "source": "Eastmoney 101.QO00Y: COMEX mini gold continuous proxy (cached fallback after refresh failure); refreshed with AkShare/Sina COMEX gold continuous GC extension",
       "passed": true
     },
     "checks": {
       "gold": {
         "available": true,
-        "source": "Eastmoney 101.QO00Y: COMEX mini gold continuous proxy (cached fallback after refresh failure); appended with AkShare/Sina COMEX gold continuous GC extension",
-        "rows": 3279,
+        "source": "Eastmoney 101.QO00Y: COMEX mini gold continuous proxy (cached fallback after refresh failure); refreshed with AkShare/Sina COMEX gold continuous GC extension",
+        "rows": 3280,
         "start": "2013-06-25",
-        "end": "2026-07-10",
-        "latestClose": 4128.4,
+        "end": "2026-07-13",
+        "latestClose": 4068.8,
         "missingClose": 0,
         "invalidOhlcRows": 0
       },
       "dxy": {
         "available": true,
-        "source": "Eastmoney 100.UDI: US Dollar Index (cached fallback after refresh failure); appended with AkShare/Sina UUP return proxy extension for DXY",
-        "rows": 3279,
+        "source": "Eastmoney 100.UDI: US Dollar Index (cached fallback after refresh failure); refreshed with AkShare/Sina UUP return proxy extension for DXY",
+        "rows": 3280,
         "start": "2013-06-25",
-        "end": "2026-07-10",
-        "latestClose": 101.40156350626118,
+        "end": "2026-07-13",
+        "latestClose": 100.92,
         "missingClose": 0,
         "invalidOhlcRows": 0
       },
       "us10y": {
         "available": true,
-        "source": "Eastmoney 171.US10Y: US 10Y Treasury yield (cached fallback after refresh failure); appended with AkShare US Treasury 10Y daily yield extension; OHLC repaired rows=1",
-        "rows": 819,
+        "source": "Eastmoney 171.US10Y: US 10Y Treasury yield (cached fallback after refresh failure); refreshed with AkShare US Treasury 10Y daily yield extension; OHLC repaired rows=2",
+        "rows": 820,
         "start": "2023-05-08",
-        "end": "2026-07-10",
+        "end": "2026-07-13",
         "latestClose": 4.56,
         "missingClose": 2460,
         "invalidOhlcRows": 0
       },
       "gld": {
         "available": true,
-        "source": "Eastmoney 107.GLD: SPDR Gold Shares ETF (cached fallback after refresh failure); appended with AkShare/Sina GLD daily extension",
-        "rows": 3279,
+        "source": "Eastmoney 107.GLD: SPDR Gold Shares ETF (cached fallback after refresh failure); refreshed with AkShare/Sina GLD daily extension",
+        "rows": 3280,
         "start": "2013-06-25",
-        "end": "2026-07-10",
+        "end": "2026-07-13",
         "latestClose": 377.01,
         "missingClose": 0,
         "invalidOhlcRows": 0
@@ -307,29 +315,29 @@
       "vix": {
         "available": true,
         "source": "Cboe official VIX historical index CSV (cached fallback)",
-        "rows": 3279,
+        "rows": 3280,
         "start": "2013-06-25",
-        "end": "2026-07-10",
+        "end": "2026-07-13",
         "latestClose": 15.03,
         "missingClose": 0,
         "invalidOhlcRows": 0
       },
       "vixy": {
         "available": true,
-        "source": "Eastmoney 107.VIXY: VIX futures ETF proxy (cached fallback after refresh failure); appended with AkShare/Sina VIXY daily extension",
-        "rows": 3279,
+        "source": "Eastmoney 107.VIXY: VIX futures ETF proxy (cached fallback after refresh failure); refreshed with AkShare/Sina VIXY daily extension",
+        "rows": 3280,
         "start": "2013-06-25",
-        "end": "2026-07-10",
+        "end": "2026-07-13",
         "latestClose": 20.34,
         "missingClose": 0,
         "invalidOhlcRows": 0
       },
       "spx": {
         "available": true,
-        "source": "Eastmoney 100.SPX: S&P 500 index (cached fallback after refresh failure); appended with AkShare/Sina S&P 500 .INX extension",
-        "rows": 3279,
+        "source": "Eastmoney 100.SPX: S&P 500 index (cached fallback after refresh failure); refreshed with AkShare/Sina S&P 500 .INX extension",
+        "rows": 3280,
         "start": "2013-06-25",
-        "end": "2026-07-10",
+        "end": "2026-07-13",
         "latestClose": 7575.3901,
         "missingClose": 0,
         "invalidOhlcRows": 0
@@ -337,97 +345,97 @@
       "cpi": {
         "available": true,
         "source": "cached CPI YoY with point-in-time release lag",
-        "rows": 3279,
+        "rows": 3280,
         "start": "2013-06-25",
-        "end": "2026-07-10",
+        "end": "2026-07-13",
         "missingRows": 0
       },
       "cot": {
         "available": true,
         "source": "cached CFTC gold positioning with release lag",
-        "rows": 3279,
+        "rows": 3280,
         "start": "2013-06-25",
-        "end": "2026-07-10",
+        "end": "2026-07-13",
         "missingRows": 0
       },
       "cftc_managed_money": {
         "available": true,
         "source": "CFTC official disaggregated futures-only COT; gold managed money; shifted +3 calendar days",
-        "rows": 3279,
+        "rows": 3280,
         "start": "2013-06-25",
-        "end": "2026-07-10",
+        "end": "2026-07-13",
         "missingRows": 0
       },
       "cpi_mom": {
         "available": true,
         "source": "AkShare US CPI MoM actual minus forecast; release-date aligned (cached fallback)",
-        "rows": 3279,
+        "rows": 3280,
         "start": "2013-06-25",
-        "end": "2026-07-10",
+        "end": "2026-07-13",
         "missingRows": 0
       },
       "core_cpi_mom": {
         "available": true,
         "source": "AkShare US core CPI MoM actual minus forecast; release-date aligned (cached fallback)",
-        "rows": 3279,
+        "rows": 3280,
         "start": "2013-06-25",
-        "end": "2026-07-10",
+        "end": "2026-07-13",
         "missingRows": 0
       },
       "nfp": {
         "available": true,
         "source": "AkShare US nonfarm payroll actual minus forecast; release-date aligned (cached fallback)",
-        "rows": 3279,
+        "rows": 3280,
         "start": "2013-06-25",
-        "end": "2026-07-10",
+        "end": "2026-07-13",
         "missingRows": 0
       },
       "tips_real_yield": {
         "available": true,
         "source": "FRED DFII10 10Y TIPS real yield (cached fallback after refresh failure)",
-        "rows": 3279,
+        "rows": 3280,
         "start": "2013-06-25",
-        "end": "2026-07-10",
+        "end": "2026-07-13",
         "missingRows": 0
       },
       "cash_yield": {
         "available": true,
         "source": "FRED DGS3MO 3-month Treasury secondary-market yield (cached fallback after refresh failure)",
-        "rows": 3279,
+        "rows": 3280,
         "start": "2013-06-25",
-        "end": "2026-07-10",
+        "end": "2026-07-13",
         "missingRows": 0
       },
       "real_rate_proxy": {
         "available": true,
         "source": "US10Y yield minus point-in-time lagged US CPI YoY",
-        "rows": 819,
+        "rows": 820,
         "start": "2023-05-08",
-        "end": "2026-07-10",
+        "end": "2026-07-13",
         "missingRows": 2460
       },
       "real_rate": {
         "available": true,
         "source": "FRED DFII10 10Y TIPS real yield",
-        "rows": 3279,
+        "rows": 3280,
         "start": "2013-06-25",
-        "end": "2026-07-10",
+        "end": "2026-07-13",
         "missingRows": 0
       },
       "gpr": {
         "available": true,
         "source": "Caldara-Iacoviello Geopolitical Risk Index; month-end +7 days release lag",
-        "rows": 3279,
+        "rows": 3280,
         "start": "2013-06-25",
-        "end": "2026-07-10",
+        "end": "2026-07-13",
         "missingRows": 0
       },
       "fomc": {
         "available": true,
         "source": "Federal Reserve FOMC calendar decision dates (cached fallback)",
-        "rows": 3279,
+        "rows": 3280,
         "start": "2013-06-25",
-        "end": "2026-07-10",
+        "end": "2026-07-13",
         "missingRows": 0
       },
       "move_index": {
@@ -445,82 +453,82 @@
     },
     "rawAvailability": {
       "gold_close": {
-        "lastObserved": "2026-07-10",
-        "ageDays": 2,
+        "lastObserved": "2026-07-13",
+        "ageDays": 0,
         "maxAgeDays": 7,
         "stale": false
       },
       "dxy_close": {
-        "lastObserved": "2026-07-10",
-        "ageDays": 2,
+        "lastObserved": "2026-07-13",
+        "ageDays": 0,
         "maxAgeDays": 7,
         "stale": false
       },
       "gld_close": {
         "lastObserved": "2026-07-10",
-        "ageDays": 2,
+        "ageDays": 3,
         "maxAgeDays": 7,
         "stale": false
       },
       "vix_close": {
         "lastObserved": "2026-07-10",
-        "ageDays": 2,
+        "ageDays": 3,
         "maxAgeDays": 7,
         "stale": false
       },
       "tips_10y_real_yield": {
         "lastObserved": "2026-07-09",
-        "ageDays": 3,
+        "ageDays": 4,
         "maxAgeDays": 10,
         "stale": false
       },
       "cash_yield_pct": {
         "lastObserved": "2026-07-09",
-        "ageDays": 3,
+        "ageDays": 4,
         "maxAgeDays": 10,
         "stale": false
       },
       "cot_gold_net": {
         "lastObserved": "2026-07-10",
-        "ageDays": 2,
+        "ageDays": 3,
         "maxAgeDays": 14,
         "stale": false
       },
       "cftc_mm_gold_net": {
         "lastObserved": "2026-07-10",
-        "ageDays": 2,
+        "ageDays": 3,
         "maxAgeDays": 14,
         "stale": false
       },
       "cpi_mom_surprise": {
         "lastObserved": "2025-08-12",
-        "ageDays": 334,
+        "ageDays": 335,
         "maxAgeDays": 62,
         "stale": true
       },
       "core_cpi_mom_surprise": {
         "lastObserved": "2025-08-12",
-        "ageDays": 334,
+        "ageDays": 335,
         "maxAgeDays": 62,
         "stale": true
       },
       "nfp_surprise": {
         "lastObserved": "2025-08-01",
-        "ageDays": 345,
+        "ageDays": 346,
         "maxAgeDays": 62,
         "stale": true
       },
       "gpr_index": {
         "lastObserved": "2026-07-07",
-        "ageDays": 5,
+        "ageDays": 6,
         "maxAgeDays": 62,
         "stale": false
       }
     },
     "staleWarnings": [
-      "cpi_mom_surprise stale by 334 days",
-      "core_cpi_mom_surprise stale by 334 days",
-      "nfp_surprise stale by 345 days"
+      "cpi_mom_surprise stale by 335 days",
+      "core_cpi_mom_surprise stale by 335 days",
+      "nfp_surprise stale by 346 days"
     ]
   },
   "notes": [
@@ -535,6 +543,7 @@
     "FOMC 事件来自美联储会议日历，作为事件日和 proximity 特征。",
     "正式算法只运行已采纳的趋势、CUSUM、ATR 和 walk-forward HMM 规则，不包含候选策略或分类预测路径。",
     "网站持仓、止损、止盈和待执行动作统一来自正式次日开盘执行账本，不再使用独立的收盘成交状态机。",
+    "若最新交易日尚未收盘，网站使用程序运行时取得的最新价格计算当日模型快照，并明确标注为盘中数据；前瞻账本仍只记录已结束交易日。",
     "HMM 固定使用初始训练期可用的 gold_core 特征集合，后续重训不允许因数据源变长而改变模型维度。",
     "训练和验证截止日已经冻结；2026-07-13 之后的新数据作为 forward holdout，不回流到历史参数选择。",
     "HMM 使用 expanding walk-forward，并约每 252 个交易日重训一次，所有状态概率只使用当时可得数据。",

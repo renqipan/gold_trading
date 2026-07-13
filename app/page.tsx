@@ -26,6 +26,18 @@ type BacktestPoint = {
 
 const prices = priceSeries as Point[];
 const backtest = backtestSeries as BacktestPoint[];
+const isIntradaySnapshot = latest.priceStatus.isFinal === false;
+const observedAt = new Intl.DateTimeFormat("zh-CN", {
+  timeZone: latest.priceStatus.timezone,
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+}).format(new Date(latest.priceStatus.observedAt));
+const priceTimestampLabel = isIntradaySnapshot
+  ? `盘中快照 · 模型更新于 ${observedAt}`
+  : `已收盘 · 模型更新于 ${observedAt}`;
 
 function pct(value: number, digits = 1) {
   return `${(value * 100).toFixed(digits)}%`;
@@ -202,7 +214,7 @@ function PriceChart() {
         <span><i className="legendMa20" />20 日均线</span>
         <span><i className="legendMa60" />60 日均线</span>
         <span><i className="legendMa120" />120 日均线</span>
-        <span>数据截至 {latest.asOf}</span>
+        <span>{latest.asOf} · {priceTimestampLabel}</span>
       </div>
     </section>
   );
@@ -330,7 +342,7 @@ export default function Home() {
             <span>Au</span>
             黄金交易研究站
           </div>
-          <div className="navMeta">趋势 + HMM · {latest.asOf}</div>
+          <div className="navMeta">趋势 + HMM · {latest.asOf} · {isIntradaySnapshot ? "盘中" : "收盘"}</div>
         </nav>
 
         <div className="heroGrid">
@@ -358,7 +370,7 @@ export default function Home() {
           </div>
 
           <div className="snapshot">
-            <MetricCard label="黄金价格" value={num(latest.price, 2)} detail={`${latest.asset} · 日变化 ${pct(oneDay, 2)}`} />
+            <MetricCard label={isIntradaySnapshot ? "黄金价格（盘中）" : "黄金收盘价"} value={num(latest.price, 2)} detail={`${priceTimestampLabel} · 日变化 ${pct(oneDay, 2)}`} />
             <MetricCard label="ATR 止损线" value={latest.atrStop ? num(latest.atrStop, 2) : "无"} detail={`止盈 ${latest.risk.profit_atr_multiple.toFixed(0)} ATR · 止损 ${latest.risk.stop_atr_multiple.toFixed(0)} ATR`} />
             <MetricCard label="开发回测 Sharpe" value={num(latest.liveExecutionMetrics.sharpe, 2)} detail={`8bps 净收益 ${pct(latest.liveExecutionMetrics.total_return, 1)}`} />
             <MetricCard label="最大回撤" value={pct(latest.liveExecutionMetrics.max_drawdown, 1)} detail={`正式策略交易动作 ${latest.liveExecutionMetrics.test_trades}`} />

@@ -135,20 +135,17 @@ npm run update:daily
 2. 防止未完成 Git 操作、脏工作树和并发更新。
 3. 快进同步 `origin/main`。
 4. 获取最新行情并执行完整验证。
-5. 检查资产身份、历史不可改写和前瞻账本 append-only。
+5. 检查资产身份、已确认历史不可改写和前瞻账本 append-only。
 6. 只允许以下四个文件被自动提交：
    - `public/data/gold_research_latest.json`
    - `public/data/gold_price_series.json`
    - `public/data/gold_backtest.json`
    - `public/data/gold_forward_ledger.json`
-7. 没有新的已收盘交易日时恢复时间戳变化，不创建空提交。
-8. 提交前再次检查远端，再直接推送 `main`。
+7. 当天未收盘时发布程序运行时取得的最新黄金价格和模型盘中快照；同一天可随价格变化安全更新。
+8. 没有新的价格或模型变化时恢复时间戳变化，不创建空提交。
+9. 提交前再次检查远端，再直接推送 `main`。
 
-周二至周六北京时间 08:00 前默认拒绝执行，避免发布未完成的 COMEX 日线。只有确认数据已收盘时才能临时设置：
-
-```bash
-ALLOW_EARLY_UPDATE=1 ./scripts/update_website_daily.sh
-```
+最新交易日尚未结束时，页面会标注“盘中快照”和模型更新时间。当天价格会参与最新趋势、HMM 状态、仓位建议和回测快照；前瞻账本仍只在交易日结束后纳入该日，避免把不断变化的盘中收益固化为历史记录。
 
 脚本依赖本机已经配置好的 GitHub SSH 凭据，不会保存 PAT、私钥或部署令牌。GitHub 推送成功后，托管平台仍需按其自身状态确认部署完成。
 

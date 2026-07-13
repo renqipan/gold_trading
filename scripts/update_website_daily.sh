@@ -55,6 +55,10 @@ read_as_of() {
   node -e "const d=require('./public/data/gold_research_latest.json'); process.stdout.write(d.asOf)"
 }
 
+read_is_final() {
+  node -e "const d=require('./public/data/gold_research_latest.json'); process.stdout.write(String(d.priceStatus?.isFinal !== false))"
+}
+
 semantic_digest() {
   node <<'NODE'
 const crypto = require("node:crypto");
@@ -77,7 +81,10 @@ const paths = [
 const payload = {};
 for (const path of paths) {
   const value = JSON.parse(fs.readFileSync(path, "utf8"));
-  if (path.endsWith("gold_research_latest.json")) delete value.dataQuality;
+  if (path.endsWith("gold_research_latest.json")) {
+    delete value.dataQuality;
+    if (value.priceStatus) delete value.priceStatus.observedAt;
+  }
   payload[path] = value;
 }
 process.stdout.write(
@@ -101,6 +108,8 @@ function newJson(path) {
 function validateDated(path) {
   const before = oldJson(path);
   const after = newJson(path);
+  const oldLatest = oldJson("public/data/gold_research_latest.json");
+  const mutableTailDate = oldLatest.priceStatus?.isFinal === false ? oldLatest.asOf : null;
   const oldDates = before.map((row) => row.date);
   const newDates = after.map((row) => row.date);
   if (new Set(newDates).size !== newDates.length || [...newDates].sort().join() !== newDates.join()) {
@@ -113,7 +122,10 @@ function validateDated(path) {
       if (oldRow.date >= newMin) throw new Error(`历史中间日期消失：${path} ${oldRow.date}`);
       continue;
     }
-    if (JSON.stringify(afterByDate.get(oldRow.date)) !== JSON.stringify(oldRow)) {
+    if (
+      JSON.stringify(afterByDate.get(oldRow.date)) !== JSON.stringify(oldRow)
+      && oldRow.date !== mutableTailDate
+    ) {
       throw new Error(`历史数据被改写：${path} ${oldRow.date}`);
     }
   }
@@ -186,12 +198,6 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
 
-shanghai_weekday="$(TZ=Asia/Shanghai date +%u)"
-shanghai_hour="$(TZ=Asia/Shanghai date +%H)"
-if [[ "${ALLOW_EARLY_UPDATE:-0}" != "1" ]] && (( 10#${shanghai_weekday} >= 2 && 10#${shanghai_weekday} <= 6 )) && (( 10#${shanghai_hour} < 8 )); then
-  die "周二至周六请在北京时间 08:00 后运行，避免发布未收盘 COMEX 日线；紧急覆盖可设置 ALLOW_EARLY_UPDATE=1"
-fi
-
 printf '同步 GitHub main...\n'
 git fetch --prune "${REMOTE}" "${BRANCH}"
 local_head="$(git rev-parse HEAD)"
@@ -209,6 +215,7 @@ fi
 START_HEAD="$(git rev-parse HEAD)"
 readonly BASE_REMOTE_HEAD="$(git rev-parse "${REMOTE}/${BRANCH}")"
 readonly OLD_AS_OF="$(read_as_of)"
+readonly OLD_IS_FINAL="$(read_is_final)"
 readonly OLD_DIGEST="$(semantic_digest)"
 
 printf '获取最新数据并完整验证...\n'
@@ -219,15 +226,20 @@ assert_only_owned_changes
 
 NEW_AS_OF="$(read_as_of)"
 [[ "${NEW_AS_OF}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || die "网站数据缺少有效 asOf 日期"
-[[ "${NEW_AS_OF}" < "$(TZ=Asia/Shanghai date +%F)" ]] || die "最新日线尚未确认收盘：${NEW_AS_OF}"
+if [[ "${NEW_AS_OF}" > "$(TZ=Asia/Shanghai date +%F)" ]]; then
+  die "网站数据日期不能晚于北京时间当天：${NEW_AS_OF}"
+fi
 [[ "${NEW_AS_OF}" > "${OLD_AS_OF}" || "${NEW_AS_OF}" == "${OLD_AS_OF}" ]] || die "网站数据日期倒退：${OLD_AS_OF} -> ${NEW_AS_OF}"
 
+NEW_IS_FINAL="$(read_is_final)"
 NEW_DIGEST="$(semantic_digest)"
 if [[ "${NEW_AS_OF}" == "${OLD_AS_OF}" ]]; then
-  [[ "${NEW_DIGEST}" == "${OLD_DIGEST}" ]] || die "相同 asOf 的行情、信号或回测发生变化，已阻止自动发布"
-  restore_owned
-  printf '没有新的已收盘交易日，无需提交。\n'
-  exit 0
+  if [[ "${NEW_DIGEST}" == "${OLD_DIGEST}" ]]; then
+    restore_owned
+    printf '最新价格与模型快照没有变化，无需提交。\n'
+    exit 0
+  fi
+  [[ "${OLD_IS_FINAL}" == "false" ]] || die "已确认收盘日期的数据发生变化，已阻止自动发布：${NEW_AS_OF}"
 fi
 
 validate_history_append_only
@@ -239,7 +251,12 @@ printf '提交前再次确认远端 main 未变化...\n'
 git fetch "${REMOTE}" "${BRANCH}"
 [[ "$(git rev-parse "${REMOTE}/${BRANCH}")" == "${BASE_REMOTE_HEAD}" ]] || die "origin/main 在更新期间发生变化；禁止自动 rebase 或 force push"
 
-git commit -m "Update gold data through ${NEW_AS_OF}" -m "Gold-Data-Automation: v1"
+if [[ "${NEW_IS_FINAL}" == "true" ]]; then
+  commit_subject="Update gold data through ${NEW_AS_OF} close"
+else
+  commit_subject="Update gold intraday snapshot for ${NEW_AS_OF}"
+fi
+git commit -m "${commit_subject}" -m "Gold-Data-Automation: v2"
 COMMIT_CREATED=1
 git push "${REMOTE}" HEAD:refs/heads/main
 git fetch "${REMOTE}" "${BRANCH}"
