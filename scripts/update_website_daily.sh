@@ -175,6 +175,21 @@ if ! mkdir "${LOCK_DIR}" 2>/dev/null; then
   die "已有更新任务在运行；若确认没有进程，请删除 ${LOCK_DIR}"
 fi
 printf 'pid=%s started=%s\n' "$$" "$(date -u +%FT%TZ)" >"${LOCK_DIR}/owner"
+readonly STEP_LOG="${LOCK_DIR}/step.log"
+
+run_quiet_step() {
+  local label="$1"
+  shift
+  : >"${STEP_LOG}"
+  printf '%s ... ' "${label}"
+  if "$@" >"${STEP_LOG}" 2>&1; then
+    printf '完成\n'
+    return 0
+  fi
+  printf '失败\n' >&2
+  tail -n 80 "${STEP_LOG}" >&2 || true
+  die "${label}失败"
+}
 
 START_HEAD=""
 COMMIT_CREATED=0
@@ -190,6 +205,7 @@ cleanup() {
     restore_owned
   fi
   rm -f "${LOCK_DIR}/owner" 2>/dev/null || true
+  rm -f "${STEP_LOG}" 2>/dev/null || true
   rmdir "${LOCK_DIR}" 2>/dev/null || true
   exit "${rc}"
 }
@@ -198,13 +214,12 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
 
-printf '同步 GitHub main...\n'
-git fetch --prune "${REMOTE}" "${BRANCH}"
+run_quiet_step '[1/4] 同步 GitHub main' git fetch --quiet --prune "${REMOTE}" "${BRANCH}"
 local_head="$(git rev-parse HEAD)"
 remote_head="$(git rev-parse "${REMOTE}/${BRANCH}")"
 if [[ "${local_head}" != "${remote_head}" ]]; then
   if git merge-base --is-ancestor "${local_head}" "${remote_head}"; then
-    git merge --ff-only "${remote_head}"
+    git merge --quiet --ff-only "${remote_head}"
   elif git merge-base --is-ancestor "${remote_head}" "${local_head}"; then
     die "本地 main 有尚未推送的提交，请先执行 git push origin main"
   else
@@ -218,10 +233,9 @@ readonly OLD_AS_OF="$(read_as_of)"
 readonly OLD_IS_FINAL="$(read_is_final)"
 readonly OLD_DIGEST="$(semantic_digest)"
 
-printf '获取最新数据并完整验证...\n'
-npm run update:data
+run_quiet_step '[2/4] 更新行情与模型' "${PYTHON_BIN}" research/gold_research_pipeline.py
 assert_only_owned_changes
-npm run verify
+run_quiet_step '[3/4] 验证策略与网站' npm run --silent verify
 assert_only_owned_changes
 
 NEW_AS_OF="$(read_as_of)"
@@ -236,7 +250,7 @@ NEW_DIGEST="$(semantic_digest)"
 if [[ "${NEW_AS_OF}" == "${OLD_AS_OF}" ]]; then
   if [[ "${NEW_DIGEST}" == "${OLD_DIGEST}" ]]; then
     restore_owned
-    printf '最新价格与模型快照没有变化，无需提交。\n'
+    printf '[4/4] 发布网站 ... 无变化，无需提交\n'
     exit 0
   fi
   [[ "${OLD_IS_FINAL}" == "false" ]] || die "已确认收盘日期的数据发生变化，已阻止自动发布：${NEW_AS_OF}"
@@ -247,8 +261,8 @@ git add -- "${DATA_FILES[@]}"
 git diff --cached --quiet && die "asOf 已更新但没有可提交的数据变化"
 git diff --cached --check
 
-printf '提交前再次确认远端 main 未变化...\n'
-git fetch "${REMOTE}" "${BRANCH}"
+printf '[4/4] 发布网站 ... '
+git fetch --quiet "${REMOTE}" "${BRANCH}"
 [[ "$(git rev-parse "${REMOTE}/${BRANCH}")" == "${BASE_REMOTE_HEAD}" ]] || die "origin/main 在更新期间发生变化；禁止自动 rebase 或 force push"
 
 if [[ "${NEW_IS_FINAL}" == "true" ]]; then
@@ -256,9 +270,9 @@ if [[ "${NEW_IS_FINAL}" == "true" ]]; then
 else
   commit_subject="Update gold intraday snapshot for ${NEW_AS_OF}"
 fi
-git commit -m "${commit_subject}" -m "Gold-Data-Automation: v2"
+git commit --quiet -m "${commit_subject}" -m "Gold-Data-Automation: v2"
 COMMIT_CREATED=1
-git push "${REMOTE}" HEAD:refs/heads/main
-git fetch "${REMOTE}" "${BRANCH}"
+git push --quiet "${REMOTE}" HEAD:refs/heads/main
+git fetch --quiet "${REMOTE}" "${BRANCH}"
 [[ "$(git rev-parse HEAD)" == "$(git rev-parse "${REMOTE}/${BRANCH}")" ]] || die "推送后本地与远端 main 不一致"
-printf '网站数据已更新并推送：%s\n' "${NEW_AS_OF}"
+printf '完成（%s）\n' "${NEW_AS_OF}"

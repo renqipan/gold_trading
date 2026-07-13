@@ -13,13 +13,13 @@
     "check:data": "node scripts/check-site-data.mjs",
     "test:sources": ".venv-research/bin/python scripts/test_data_sources.py",
     "test:strategy": ".venv-research/bin/python scripts/test_strategy_engine.py",
-    "update:data": ".venv-research/bin/python research/gold_research_pipeline.py --json",
+    "update:data": ".venv-research/bin/python research/gold_research_pipeline.py",
     "update:daily": "bash scripts/update_website_daily.sh",
     "update:site": "npm run update:data && npm run check:data && npm run build",
     "verify": "npm run test:strategy && npm run check:data && npm run lint && npm run build"
   },
   "dependencies": {
-    "next": "^16.2.9",
+    "next": "^16.2.10",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },
@@ -28,5 +28,8 @@
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
     "typescript": "^5.9.3"
+  },
+  "overrides": {
+    "postcss": "8.5.19"
   }
 }

@@ -91,7 +91,7 @@ if (latest.dataQuality?.passed !== true) {
 if (latest.dataQuality?.assetIdentity?.passed !== true) {
   throw new Error("site release is blocked because the gold asset identity is not verified");
 }
-assertEqual("latest.asset", latest.asset, "COMEX 迷你黄金连续合约 QO00Y");
+assertEqual("latest.asset", latest.asset, "COMEX 黄金连续合约 QO00Y/GC proxy");
 const goldSource = String(latest.dataQuality.assetIdentity.source || "");
 if (/Au99\.99|Shanghai Gold Exchange/i.test(goldSource)) {
   throw new Error(`site release is blocked because a different gold asset was substituted: ${goldSource}`);
