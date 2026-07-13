@@ -39,11 +39,9 @@ def execution_frame(periods: int = 6) -> pd.DataFrame:
             "tb_event": False,
             "tb_accepted_event": False,
             "primary_trend_signal": True,
-            "p_profit_first_event": np.nan,
             "atr_stop_enabled": False,
             "atr_profit_enabled": False,
             "hmm_exit_enabled": True,
-            "trend_exit_enabled": False,
             "target_position_override": 1.0,
         },
         index=index,
@@ -72,7 +70,6 @@ def test_partial_position_uses_cash_and_units_without_free_rebalancing() -> None
             "atr": [1.0, 1.0, 1.0],
             "tb_event": [True, False, False],
             "tb_accepted_event": [True, False, False],
-            "p_profit_first_event": [0.8, np.nan, np.nan],
         },
         index=index,
     )
@@ -96,27 +93,17 @@ def test_partial_position_uses_cash_and_units_without_free_rebalancing() -> None
     assert abs(result.iloc[-1]["position"] - (0.005 * 121 / 1.105)) < 1e-12
 
 
-def test_low_price_modes_are_distinct_from_the_formal_trend() -> None:
+def test_primary_signal_uses_only_the_adopted_long_term_trend() -> None:
     frame = pd.DataFrame(
         {
-            "gold_close": [90.0],
-            "sma_20": [85.0],
-            "sma_60": [100.0],
-            "sma_120": [110.0],
-            "ret_5": [0.02],
-            "ret_20": [0.04],
-            "new_low_240": [1.0],
-            "recent_new_low_240": [1.0],
+            "gold_close": [90.0, 115.0, 95.0],
+            "sma_20": [85.0, 105.0, 110.0],
+            "sma_60": [100.0, 102.0, 100.0],
+            "sma_120": [110.0, 100.0, 90.0],
         },
-        index=[pd.Timestamp("2024-01-01")],
+        index=pd.date_range("2024-01-01", periods=3),
     )
-    assert not bool(primary_long_signal(frame, "trend_slow").iloc[0])
-    assert bool(primary_long_signal(frame, "below_sma_60").iloc[0])
-    assert bool(primary_long_signal(frame, "below_sma_120").iloc[0])
-    assert bool(primary_long_signal(frame, "dip_recovery_60").iloc[0])
-    assert bool(primary_long_signal(frame, "new_low_240").iloc[0])
-    assert bool(primary_long_signal(frame, "dip_recovery_240").iloc[0])
-    assert bool(primary_long_signal(frame, "trend_or_dip_240").iloc[0])
+    assert primary_long_signal(frame).tolist() == [False, True, True]
 
 
 def test_long_only_unlevered_config_is_enforced() -> None:
@@ -431,10 +418,43 @@ def test_forward_ledger_is_append_only() -> None:
         pipeline.FORWARD_LEDGER = original_path
 
 
+def test_empty_forward_ledger_allows_fingerprint_migration() -> None:
+    execution = pd.DataFrame(
+        columns=[
+            "strategy_ret",
+            "benchmark_ret",
+            "position",
+            "desired_position",
+            "turnover",
+            "cash_interest",
+            "execution_action",
+            "guide",
+            "pending_entry",
+            "pending_exit",
+        ],
+        index=pd.DatetimeIndex([]),
+    )
+    original_path = pipeline.FORWARD_LEDGER
+    try:
+        with tempfile.TemporaryDirectory() as directory:
+            pipeline.FORWARD_LEDGER = Path(directory) / "forward.json"
+            pipeline.FORWARD_LEDGER.write_text(
+                '{"strategyVersion":"2026-07-13-v1","executionEngineVersion":"strict-next-open-v2",'
+                '"configFingerprint":"legacy-empty-ledger","start":"2026-07-13",'
+                '"appendOnly":true,"records":[]}',
+                encoding="utf-8",
+            )
+            metrics = update_forward_ledger(execution, RiskConfig())
+            assert metrics["days"] == 0
+            assert metrics["config_fingerprint"] != "legacy-empty-ledger"
+    finally:
+        pipeline.FORWARD_LEDGER = original_path
+
+
 if __name__ == "__main__":
     test_dynamic_trend_risk_budget()
     test_partial_position_uses_cash_and_units_without_free_rebalancing()
-    test_low_price_modes_are_distinct_from_the_formal_trend()
+    test_primary_signal_uses_only_the_adopted_long_term_trend()
     test_long_only_unlevered_config_is_enforced()
     test_signal_executes_only_at_next_open_and_last_signal_remains_pending()
     test_hmm_confirmation_resets_after_exit_and_can_be_disabled()
@@ -446,4 +466,5 @@ if __name__ == "__main__":
     test_soft_drawdown_scales_pending_target()
     test_public_state_overlay_uses_strict_execution_ledger()
     test_forward_ledger_is_append_only()
+    test_empty_forward_ledger_allows_fingerprint_migration()
     print("strategy engine tests passed")

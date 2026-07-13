@@ -139,6 +139,7 @@ function PriceChart() {
     point.sma_5,
     point.sma_20,
     point.sma_60,
+    point.sma_120,
   ]).filter((value): value is number => typeof value === "number" && Number.isFinite(value));
   const domain: [number, number] = [Math.min(...priceDomainValues), Math.max(...priceDomainValues)];
   const closePath = linePath(
@@ -158,6 +159,7 @@ function PriceChart() {
   const sma5Path = linePath(recent.map((point) => point.sma_5 as number), 960, 360, 24, domain);
   const sma20Path = linePath(recent.map((point) => point.sma_20 as number), 960, 360, 24, domain);
   const sma60Path = linePath(recent.map((point) => point.sma_60 as number), 960, 360, 24, domain);
+  const sma120Path = linePath(recent.map((point) => point.sma_120 as number), 960, 360, 24, domain);
   const min = Math.min(...recent.map((point) => point.close));
   const max = Math.max(...recent.map((point) => point.close));
 
@@ -179,6 +181,7 @@ function PriceChart() {
         <path d={sma5Path} className="maLine ma5Line" />
         <path d={sma20Path} className="maLine ma20Line" />
         <path d={sma60Path} className="maLine ma60Line" />
+        <path d={sma120Path} className="maLine ma120Line" />
         {recent.map((point, index) => {
           if (index % 28 !== 0) return null;
           return (
@@ -198,6 +201,7 @@ function PriceChart() {
         <span><i className="legendMa5" />5 日均线</span>
         <span><i className="legendMa20" />20 日均线</span>
         <span><i className="legendMa60" />60 日均线</span>
+        <span><i className="legendMa120" />120 日均线</span>
         <span>数据截至 {latest.asOf}</span>
       </div>
     </section>

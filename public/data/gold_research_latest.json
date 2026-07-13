@@ -34,11 +34,8 @@
     "max_drawdown_hard": 0.3,
     "hard_drawdown_cooldown_days": 63,
     "atr_window": 14,
-    "retrain_every_days": 21,
     "meta_event_gap_days": 5,
-    "meta_event_kind": "cusum_abs",
     "cusum_threshold_mult": 0.8,
-    "primary_signal_mode": "trend_slow",
     "hmm_feature_policy": "gold_core",
     "hmm_retrain_every_days": 252,
     "hmm_exit_confirmation_days": 20,
@@ -47,7 +44,6 @@
     "atr_stop_enabled": true,
     "atr_profit_enabled": true,
     "hmm_exit_enabled": true,
-    "trend_exit_enabled": false,
     "realistic_cost_bps": 8.0,
     "cash_yield_enabled": true,
     "cash_yield_haircut_bps": 50.0,
@@ -81,9 +77,7 @@
     "net_sharpe_5bps": 1.7173207470134122,
     "net_max_drawdown_5bps": -0.10881709982997334,
     "net_total_return_5bps_without_cash_yield": 1.9206196020809436,
-    "cash_yield_return_uplift_5bps": 0.034974599926877126,
-    "close_research_total_return": 1.4692290928933094,
-    "close_research_sharpe": 1.8125814929492974
+    "cash_yield_return_uplift_5bps": 0.034974599926877126
   },
   "liveExecutionMetrics": {
     "execution_model": "t_close_signal_t_plus_1_open_with_intraday_atr_fills",
@@ -120,7 +114,7 @@
     "append_only": true,
     "strategy_version": "2026-07-13-v1",
     "execution_engine_version": "strict-next-open-v2",
-    "config_fingerprint": "6c6b06b79a97cdc3c4a56a49bb7cc6e2fc0e61de404f04414d34c84919701cae"
+    "config_fingerprint": "d803595a675233f38f44db232d49b7a7e8a25cbefb94ae757ffd647e280b4c4b"
   },
   "backtestYearly": [
     {
@@ -229,162 +223,6 @@
       "probability_positive_sharpe": 0.9995
     }
   },
-  "entryModeComparison": [
-    {
-      "mode": "trend_slow",
-      "selected": true,
-      "validation_return_5bps": 0.14090894593780234,
-      "validation_sharpe_5bps": 0.5725282692434914,
-      "validation_max_drawdown_5bps": -0.09690074539034921,
-      "validation_trades": 5,
-      "validation_active_day_ratio": 0.6576402321083172,
-      "test_return_5bps": 1.9555942020078207,
-      "test_sharpe_5bps": 1.7173207470134122,
-      "test_max_drawdown_5bps": -0.10881709982997334,
-      "test_trades": 22,
-      "test_active_day_ratio": 0.9250288350634371
-    },
-    {
-      "mode": "tsmom_ensemble",
-      "selected": false,
-      "validation_return_5bps": -0.06556723305820744,
-      "validation_sharpe_5bps": -0.3669331348158886,
-      "validation_max_drawdown_5bps": -0.15328473589238933,
-      "validation_trades": 9,
-      "validation_active_day_ratio": 0.6073500967117988,
-      "test_return_5bps": 1.7298550314031216,
-      "test_sharpe_5bps": 1.5589645823677356,
-      "test_max_drawdown_5bps": -0.16430879757918304,
-      "test_trades": 24,
-      "test_active_day_ratio": 0.9388696655132641
-    },
-    {
-      "mode": "below_sma_60",
-      "selected": false,
-      "validation_return_5bps": 0.06942783111312534,
-      "validation_sharpe_5bps": 0.23109016059908657,
-      "validation_max_drawdown_5bps": -0.16371095326923035,
-      "validation_trades": 17,
-      "validation_active_day_ratio": 0.8607350096711799,
-      "test_return_5bps": 0.8668212680833207,
-      "test_sharpe_5bps": 1.232327782511427,
-      "test_max_drawdown_5bps": -0.12732796599047713,
-      "test_trades": 17,
-      "test_active_day_ratio": 0.6251441753171857
-    },
-    {
-      "mode": "below_sma_120",
-      "selected": false,
-      "validation_return_5bps": 0.081529061908024,
-      "validation_sharpe_5bps": 0.2876112717389055,
-      "validation_max_drawdown_5bps": -0.20596892859940696,
-      "validation_trades": 27,
-      "validation_active_day_ratio": 0.9284332688588007,
-      "test_return_5bps": 0.16198245724208138,
-      "test_sharpe_5bps": 0.08207493035553552,
-      "test_max_drawdown_5bps": -0.11536738318867501,
-      "test_trades": 9,
-      "test_active_day_ratio": 0.2825836216839677
-    },
-    {
-      "mode": "dip_recovery_60",
-      "selected": false,
-      "validation_return_5bps": 0.04507871080497483,
-      "validation_sharpe_5bps": 0.14738416571296079,
-      "validation_max_drawdown_5bps": -0.1732253719264969,
-      "validation_trades": 14,
-      "validation_active_day_ratio": 0.7040618955512572,
-      "test_return_5bps": 0.2895227989565552,
-      "test_sharpe_5bps": 0.5543637582735603,
-      "test_max_drawdown_5bps": -0.08105857766687463,
-      "test_trades": 8,
-      "test_active_day_ratio": 0.17993079584775087
-    },
-    {
-      "mode": "dip_recovery_120",
-      "selected": false,
-      "validation_return_5bps": 0.020217642662466506,
-      "validation_sharpe_5bps": 0.04564032742643386,
-      "validation_max_drawdown_5bps": -0.16406490690135755,
-      "validation_trades": 9,
-      "validation_active_day_ratio": 0.7176015473887815,
-      "test_return_5bps": 0.2118155743131902,
-      "test_sharpe_5bps": 0.3806110309398613,
-      "test_max_drawdown_5bps": -0.04662884114054977,
-      "test_trades": 4,
-      "test_active_day_ratio": 0.12687427912341406
-    },
-    {
-      "mode": "trend_or_dip_60",
-      "selected": false,
-      "validation_return_5bps": 0.14075051793628002,
-      "validation_sharpe_5bps": 0.5100106536622055,
-      "validation_max_drawdown_5bps": -0.12319998105853969,
-      "validation_trades": 15,
-      "validation_active_day_ratio": 0.8317214700193424,
-      "test_return_5bps": 1.9555942020078207,
-      "test_sharpe_5bps": 1.7173207470134122,
-      "test_max_drawdown_5bps": -0.10881709982997334,
-      "test_trades": 22,
-      "test_active_day_ratio": 0.9250288350634371
-    },
-    {
-      "mode": "trend_or_dip_120",
-      "selected": false,
-      "validation_return_5bps": 0.00944005596683728,
-      "validation_sharpe_5bps": 0.000996484372644629,
-      "validation_max_drawdown_5bps": -0.21072407483051048,
-      "validation_trades": 21,
-      "validation_active_day_ratio": 0.8336557059961315,
-      "test_return_5bps": 1.8612980360686997,
-      "test_sharpe_5bps": 1.6612075072378993,
-      "test_max_drawdown_5bps": -0.10881709982997334,
-      "test_trades": 22,
-      "test_active_day_ratio": 0.9215686274509803
-    },
-    {
-      "mode": "new_low_240",
-      "selected": false,
-      "validation_return_5bps": 0.010852538375250464,
-      "validation_sharpe_5bps": -0.07431225100593204,
-      "validation_max_drawdown_5bps": -0.07553073624494056,
-      "validation_trades": 4,
-      "validation_active_day_ratio": 0.14119922630560927,
-      "test_return_5bps": 0.14881266624879208,
-      "test_sharpe_5bps": 0.0,
-      "test_max_drawdown_5bps": 0.0,
-      "test_trades": 0,
-      "test_active_day_ratio": 0.0
-    },
-    {
-      "mode": "dip_recovery_240",
-      "selected": false,
-      "validation_return_5bps": -0.04509647686109608,
-      "validation_sharpe_5bps": -0.8259680689869876,
-      "validation_max_drawdown_5bps": -0.09040221534655779,
-      "validation_trades": 4,
-      "validation_active_day_ratio": 0.09864603481624758,
-      "test_return_5bps": 0.14881266624879208,
-      "test_sharpe_5bps": 0.0,
-      "test_max_drawdown_5bps": 0.0,
-      "test_trades": 0,
-      "test_active_day_ratio": 0.0
-    },
-    {
-      "mode": "trend_or_dip_240",
-      "selected": false,
-      "validation_return_5bps": 0.06519763696092151,
-      "validation_sharpe_5bps": 0.23540849041501696,
-      "validation_max_drawdown_5bps": -0.10407547038415099,
-      "validation_trades": 9,
-      "validation_active_day_ratio": 0.7562862669245648,
-      "test_return_5bps": 1.9555942020078207,
-      "test_sharpe_5bps": 1.7173207470134122,
-      "test_max_drawdown_5bps": -0.10881709982997334,
-      "test_trades": 22,
-      "test_active_day_ratio": 0.9250288350634371
-    }
-  ],
   "stateMapping": {
     "1": "牛市",
     "0": "熊市",
@@ -417,9 +255,14 @@
     "gold_etf_net_flow": "proxy only: GLD signed dollar volume flow from traded price and amount; not official ETF creations/redemptions"
   },
   "dataQuality": {
-    "generatedAt": "2026-07-12T03:40:08Z",
+    "generatedAt": "2026-07-12T14:25:44Z",
     "referenceDate": "2026-07-12",
     "passed": true,
+    "assetIdentity": {
+      "expected": "COMEX gold continuous proxy in USD per troy ounce",
+      "source": "Eastmoney 101.QO00Y: COMEX mini gold continuous proxy (cached fallback after refresh failure); appended with AkShare/Sina COMEX gold continuous GC extension",
+      "passed": true
+    },
     "checks": {
       "gold": {
         "available": true,
@@ -690,10 +533,9 @@
     "MOVE、Fed funds futures implied rate、GLD 官方持仓和黄金 ETF 官方净流入当前没有稳定免费 point-in-time 接口，已在 sources/dataQuality 标为不可用或 proxy。",
     "GPR 使用 Caldara-Iacoviello 月度地缘政治风险指数，并做月末后 7 天滞后近似。",
     "FOMC 事件来自美联储会议日历，作为事件日和 proximity 特征。",
-    "正式算法不再训练或读取机器学习分类概率；交易决策完全来自可解释的趋势、CUSUM、ATR 和 walk-forward HMM 规则。",
+    "正式算法只运行已采纳的趋势、CUSUM、ATR 和 walk-forward HMM 规则，不包含候选策略或分类预测路径。",
     "网站持仓、止损、止盈和待执行动作统一来自正式次日开盘执行账本，不再使用独立的收盘成交状态机。",
     "HMM 固定使用初始训练期可用的 gold_core 特征集合，后续重训不允许因数据源变长而改变模型维度。",
-    "低于 60/120 日均线、240 日新低、带反转确认以及趋势与低点并集模式均已用冻结验证和严格执行引擎比较，正式策略保留 120 日趋势入场。",
     "训练和验证截止日已经冻结；2026-07-13 之后的新数据作为 forward holdout，不回流到历史参数选择。",
     "HMM 使用 expanding walk-forward，并约每 252 个交易日重训一次，所有状态概率只使用当时可得数据。",
     "入场仓位按 ATR 止损距离缩放：普通趋势风险预算 10%，120 日收益达到 12% 的强趋势预算 14%；隔夜跳空可能使实际损失超过计划值。",

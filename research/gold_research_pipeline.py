@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import inspect
 import json
 import math
 import os
@@ -10,7 +11,6 @@ import re
 import subprocess
 import time
 import urllib.parse
-import warnings
 import zipfile
 from dataclasses import asdict, dataclass, replace
 from io import StringIO
@@ -22,19 +22,8 @@ import pandas as pd
 import requests
 from hmmlearn.hmm import GaussianHMM
 from sklearn.impute import SimpleImputer
-from sklearn.metrics import (
-    accuracy_score,
-    average_precision_score,
-    brier_score_loss,
-    precision_score,
-    recall_score,
-    roc_auc_score,
-)
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
-
-warnings.filterwarnings("ignore")
-
 
 ROOT = Path(__file__).resolve().parents[1]
 PUBLIC_DATA = ROOT / "public" / "data"
@@ -63,9 +52,6 @@ class RiskConfig:
     train_end_date: str = "2021-02-23"
     validation_end_date: str = "2023-02-27"
     forward_holdout_start_date: str = "2026-07-13"
-    prediction_horizon_days: int = 60
-    up_threshold: float = 0.075
-    down_threshold: float = 0.36
     max_position: float = 1.0
     max_leverage: float = 1.0
     long_only: bool = True
@@ -78,11 +64,8 @@ class RiskConfig:
     max_drawdown_hard: float = 0.30
     hard_drawdown_cooldown_days: int = 63
     atr_window: int = 14
-    retrain_every_days: int = 21
     meta_event_gap_days: int = 5
-    meta_event_kind: str = "cusum_abs"
     cusum_threshold_mult: float = 0.8
-    primary_signal_mode: str = "trend_slow"
     hmm_feature_policy: str = "gold_core"
     hmm_retrain_every_days: int = 252
     hmm_exit_confirmation_days: int = 20
@@ -91,19 +74,6 @@ class RiskConfig:
     atr_stop_enabled: bool = True
     atr_profit_enabled: bool = True
     hmm_exit_enabled: bool = True
-    trend_exit_enabled: bool = False
-    xgboost_min_validation_auc: float = 0.52
-    xgboost_min_validation_buy_signals: int = 15
-    xgboost_min_validation_precision: float = 0.20
-    xgboost_min_validation_recall: float = 0.05
-    xgboost_feature_policy: str = "regime_explainable"
-    xgboost_scale_pos_weight_cap: float = 1.0
-    xgboost_min_validation_strategy_uplift: float = 0.002
-    xgboost_min_validation_strategy_trades: int = 8
-    xgboost_min_precision_lift: float = 1.05
-    xgboost_min_validation_coverage: float = 0.65
-    xgboost_entry_thresholds: tuple[float, ...] = (0.05, 0.075, 0.10, 0.125, 0.15, 0.20, 0.25)
-    xgboost_use_model_exit: bool = False
     realistic_cost_bps: float = 8.0
     cash_yield_enabled: bool = True
     cash_yield_haircut_bps: float = 50.0
@@ -117,6 +87,8 @@ class RiskConfig:
             raise ValueError("max_position must be in (0, 1] for an unlevered strategy")
         if not 0 < self.max_leverage <= 1.0:
             raise ValueError("max_leverage must be in (0, 1] for an unlevered strategy")
+        if self.hmm_feature_policy != "gold_core":
+            raise ValueError("The formal HMM feature policy is fixed to gold_core")
         if self.cash_yield_haircut_bps < 0:
             raise ValueError("cash_yield_haircut_bps must be non-negative")
 
@@ -171,6 +143,21 @@ def json_safe(value: Any) -> Any:
     return value
 
 
+def write_json_atomic(path: Path, payload: Any, *, indent: int | None = None) -> None:
+    """Replace a published JSON file atomically after strict serialization succeeds."""
+    temporary = path.with_suffix(f"{path.suffix}.tmp")
+    temporary.write_text(
+        json.dumps(
+            json_safe(payload),
+            ensure_ascii=False,
+            indent=indent,
+            allow_nan=False,
+        ),
+        encoding="utf-8",
+    )
+    os.replace(temporary, path)
+
+
 def random_request_pause(attempt: int) -> None:
     if attempt == 0:
         time.sleep(random.uniform(0.20, 0.70))
@@ -183,7 +170,6 @@ def curl_json(full_url: str, headers: dict[str, str], timeout: int) -> dict[str,
     command = [
         "curl",
         "-q",
-        "-k",
         "-L",
         "--silent",
         "--show-error",
@@ -218,7 +204,6 @@ def curl_text(full_url: str, headers: dict[str, str], timeout: int) -> str:
     command = [
         "curl",
         "-q",
-        "-k",
         "-L",
         "--silent",
         "--show-error",
@@ -249,7 +234,6 @@ def curl_bytes(full_url: str, headers: dict[str, str], timeout: int) -> bytes:
     command = [
         "curl",
         "-q",
-        "-k",
         "-L",
         "--silent",
         "--show-error",
@@ -286,7 +270,7 @@ def request_json(url: str, params: dict[str, Any], timeout: int = 12, attempts: 
             random_request_pause(attempt)
             headers = browser_headers()
             try:
-                response = session.get(url, params=params, headers=headers, timeout=(4, timeout), verify=False)
+                response = session.get(url, params=params, headers=headers, timeout=(4, timeout))
                 response.raise_for_status()
                 return response.json()
             except Exception as exc:
@@ -309,7 +293,7 @@ def request_text(url: str, timeout: int = 20, attempts: int = 3) -> str:
             random_request_pause(attempt)
             headers = browser_headers(referer=url)
             try:
-                response = session.get(url, headers=headers, timeout=(5, timeout), verify=False)
+                response = session.get(url, headers=headers, timeout=(5, timeout))
                 response.raise_for_status()
                 return response.text
             except Exception as exc:
@@ -330,7 +314,7 @@ def request_bytes(url: str, timeout: int = 30, attempts: int = 3) -> bytes:
             random_request_pause(attempt)
             headers = browser_headers(referer=url)
             try:
-                response = session.get(url, headers=headers, timeout=(5, timeout), verify=False)
+                response = session.get(url, headers=headers, timeout=(5, timeout))
                 response.raise_for_status()
                 return response.content
             except Exception as exc:
@@ -473,7 +457,7 @@ def fetch_cot_gold() -> pd.DataFrame:
 
 
 def fetch_cftc_managed_money_gold(start_year: int = 2013, end_year: int | None = None) -> pd.DataFrame:
-    end_year = end_year or pd.Timestamp.utcnow().year
+    end_year = end_year or pd.Timestamp.now(tz="UTC").year
     rows: list[pd.DataFrame] = []
     for year in range(start_year, end_year + 1):
         zip_path = RAW_DATA / f"cftc_fut_disagg_{year}.zip"
@@ -863,19 +847,9 @@ def load_market_data() -> tuple[pd.DataFrame, dict[str, str]]:
     )
 
     if not any(column.startswith("gold_close") for frame in series for column in frame.columns):
-        try:
-            import akshare as ak
-
-            fallback = ak.spot_hist_sge(symbol="Au99.99")
-            fallback["date"] = pd.to_datetime(fallback["date"])
-            fallback = fallback.set_index("date").sort_index()
-            fallback = fallback.rename(columns={column: f"gold_{column}" for column in fallback.columns})
-            fallback["gold_volume"] = np.nan
-            fallback["gold_amount"] = np.nan
-            series.append(fallback)
-            sources["gold"] = "Shanghai Gold Exchange Au99.99 fallback"
-        except Exception as exc:
-            raise RuntimeError("Gold price data is required but unavailable") from exc
+        raise RuntimeError(
+            "COMEX gold data is unavailable; refusing to substitute an asset with a different currency or unit"
+        )
 
     raw_cpi = fetch_cpi_yoy()
     if len(raw_cpi):
@@ -1015,7 +989,7 @@ def load_market_data() -> tuple[pd.DataFrame, dict[str, str]]:
             sources["fomc"] = f"unavailable: {compact_error(str(exc))}"
             print("[warn] FOMC calendar unavailable")
 
-    data = pd.concat(series, axis=1).sort_index().replace([np.inf, -np.inf], np.nan)
+    data = pd.concat(series, axis=1, sort=False).sort_index().replace([np.inf, -np.inf], np.nan)
     gold_index = data.loc[data["gold_close"].notna()].index
     raw_last_observed = {
         column: str(data[column].dropna().index.max().date())
@@ -1179,10 +1153,20 @@ def verify_data_quality(data: pd.DataFrame, sources: dict[str, str]) -> dict[str
         column not in raw_availability or bool(raw_availability[column].get("stale", False))
         for column in critical_columns
     )
+    gold_source = sources.get("gold", "")
+    asset_identity_passed = any(
+        marker in gold_source
+        for marker in ["101.QO00Y", "COMEX", "GC extension"]
+    )
     quality = {
-        "generatedAt": pd.Timestamp.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "generatedAt": pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%dT%H:%M:%SZ"),
         "referenceDate": str(reference_date.date()),
-        "passed": bool(ohlc_passed and not critical_stale),
+        "passed": bool(ohlc_passed and not critical_stale and asset_identity_passed),
+        "assetIdentity": {
+            "expected": "COMEX gold continuous proxy in USD per troy ounce",
+            "source": gold_source,
+            "passed": asset_identity_passed,
+        },
         "checks": checks,
         "rawAvailability": raw_availability,
         "staleWarnings": stale_warnings,
@@ -1192,12 +1176,6 @@ def verify_data_quality(data: pd.DataFrame, sources: dict[str, str]) -> dict[str
         encoding="utf-8",
     )
     return quality
-
-
-def rolling_zscore(series: pd.Series, window: int) -> pd.Series:
-    mean = series.rolling(window).mean()
-    std = series.rolling(window).std()
-    return (series - mean) / std.replace(0, np.nan)
 
 
 def compute_atr(frame: pd.DataFrame, prefix: str = "gold", window: int = 14) -> pd.Series:
@@ -1247,559 +1225,30 @@ def trend_risk_budget(row: Any, config: RiskConfig) -> float:
     return config.strong_trend_risk_budget if strong else config.normal_trend_risk_budget
 
 
-def add_trend_quality_features(frame: pd.DataFrame) -> pd.DataFrame:
-    high = frame["gold_high"]
-    low = frame["gold_low"]
-    close = frame["gold_close"]
-    up_move = high.diff()
-    down_move = -low.diff()
-    plus_dm = pd.Series(np.where((up_move > down_move) & (up_move > 0), up_move, 0.0), index=frame.index)
-    minus_dm = pd.Series(np.where((down_move > up_move) & (down_move > 0), down_move, 0.0), index=frame.index)
-    previous_close = close.shift(1)
-    true_range = pd.concat(
-        [
-            high - low,
-            (high - previous_close).abs(),
-            (low - previous_close).abs(),
-        ],
-        axis=1,
-    ).max(axis=1)
-    atr_sum = true_range.rolling(14).sum().replace(0, np.nan)
-    plus_di = 100 * plus_dm.rolling(14).sum() / atr_sum
-    minus_di = 100 * minus_dm.rolling(14).sum() / atr_sum
-    dx = ((plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)) * 100
-    frame["adx_14"] = dx.rolling(14).mean()
-
-    delta = close.diff()
-    gain = delta.clip(lower=0).rolling(14).mean()
-    loss = (-delta.clip(upper=0)).rolling(14).mean()
-    rs = gain / loss.replace(0, np.nan)
-    frame["rsi_14"] = 100 - (100 / (1 + rs))
-
-    frame["donchian_120"] = close / close.rolling(120).max() - 1
-    frame["price_to_high_252"] = close / close.rolling(252).max() - 1
-    frame["tsmom_score"] = (
-        frame["ret_60"].fillna(0)
-        + frame["ret_120"].fillna(0)
-        + 0.5 * frame["ret_180"].fillna(0)
-    )
-    frame["trend_quality_score"] = (
-        frame["trend_strength"].fillna(0)
-        + frame["ret_vol_adj_20"].fillna(0).clip(-2, 2) * 0.02
-        - frame["vol_ratio_20_60"].fillna(1).clip(0, 3) * 0.01
-    )
-    return frame
-
-
 def build_features(data: pd.DataFrame, config: RiskConfig) -> pd.DataFrame:
+    """Build only the features consumed by the adopted strategy and website."""
     frame = data.copy()
     close = frame["gold_close"]
     frame["ret_1"] = close.pct_change()
-    for window in [3, 5, 10, 20, 30, 60, 120, 180, 252]:
+    for window in [5, 20, 60, 120]:
         frame[f"ret_{window}"] = close.pct_change(window)
-        frame[f"mom_{window}"] = close / close.shift(window) - 1
         frame[f"sma_{window}"] = close.rolling(window).mean()
-        frame[f"sma_gap_{window}"] = close / frame[f"sma_{window}"] - 1
-    for window in [10, 20, 30, 60, 120]:
-        frame[f"vol_{window}"] = frame["ret_1"].rolling(window).std() * math.sqrt(252)
-
+    frame["sma_gap_60"] = close / frame["sma_60"] - 1
+    frame["vol_20"] = frame["ret_1"].rolling(20).std() * math.sqrt(252)
     frame["atr"] = compute_atr(frame, window=config.atr_window)
     frame["atr_pct"] = frame["atr"] / close
     frame["drawdown_120"] = close / close.rolling(120).max() - 1
-    frame["drawdown_252"] = close / close.rolling(252).max() - 1
-    prior_low_240 = close.shift(1).rolling(240).min()
-    frame["distance_to_prior_low_240"] = close / prior_low_240.replace(0, np.nan) - 1
-    frame["new_low_240"] = (close <= prior_low_240).astype(float)
-    frame["recent_new_low_240"] = frame["new_low_240"].rolling(20, min_periods=1).max()
-    frame["rebound_from_low_20"] = close / close.rolling(20).min().replace(0, np.nan) - 1
-    frame["range_pct"] = (frame["gold_high"] - frame["gold_low"]) / close
-    frame["ma_cross_5_20"] = frame["sma_5"] / frame["sma_20"] - 1
-    frame["ma_cross_20_60"] = frame["sma_20"] / frame["sma_60"] - 1
-    frame["ma_cross_60_120"] = frame["sma_60"] / frame["sma_120"] - 1
-    frame["vol_ratio_20_60"] = frame["vol_20"] / frame["vol_60"].replace(0, np.nan)
-    frame["ret_vol_adj_20"] = frame["ret_20"] / frame["vol_20"].replace(0, np.nan)
-    frame["ret_vol_adj_120"] = frame["ret_120"] / frame["vol_120"].replace(0, np.nan)
-    frame["high_breakout_120"] = close / close.rolling(120).max() - 1
-    frame["low_breakdown_120"] = close / close.rolling(120).min() - 1
-    frame["trend_strength"] = (frame["sma_gap_20"] + frame["ma_cross_20_60"] + frame["ma_cross_60_120"]) / 3
-    technical_trend = (
-        (close > frame["sma_120"])
-        | ((frame["sma_20"] > frame["sma_60"]) & (frame["sma_60"] > frame["sma_120"]))
-    ).fillna(False)
-    trend_groups = (~technical_trend).cumsum()
-    frame["trend_age_120"] = technical_trend.astype(int).groupby(trend_groups).cumsum().clip(0, 252) / 252
-    frame["momentum_accel_20_60"] = frame["ret_20"] - frame["ret_60"] / 3
-    frame["momentum_accel_60_120"] = frame["ret_60"] - frame["ret_120"] / 2
-    frame["oc_ret"] = close / frame["gold_open"].replace(0, np.nan) - 1
-    frame["gap_ret"] = frame["gold_open"] / close.shift(1).replace(0, np.nan) - 1
-    frame["close_location_20"] = (
-        (close - frame["gold_low"].rolling(20).min())
-        / (frame["gold_high"].rolling(20).max() - frame["gold_low"].rolling(20).min()).replace(0, np.nan)
-    )
-    frame["close_location_60"] = (
-        (close - frame["gold_low"].rolling(60).min())
-        / (frame["gold_high"].rolling(60).max() - frame["gold_low"].rolling(60).min()).replace(0, np.nan)
-    )
-
-    ema_12 = close.ewm(span=12, adjust=False).mean()
-    ema_26 = close.ewm(span=26, adjust=False).mean()
-    macd = ema_12 - ema_26
-    macd_signal = macd.ewm(span=9, adjust=False).mean()
-    frame["macd_norm"] = macd / close.replace(0, np.nan)
-    frame["macd_signal_norm"] = macd_signal / close.replace(0, np.nan)
-    frame["macd_hist_norm"] = (macd - macd_signal) / close.replace(0, np.nan)
-
-    for window in [20, 60]:
-        band_mid = close.rolling(window).mean()
-        band_std = close.rolling(window).std()
-        band_upper = band_mid + 2 * band_std
-        band_lower = band_mid - 2 * band_std
-        frame[f"bb_percent_b_{window}"] = (close - band_lower) / (band_upper - band_lower).replace(0, np.nan)
-        frame[f"bb_width_{window}"] = (band_upper - band_lower) / band_mid.replace(0, np.nan)
-
-    lowest_14 = frame["gold_low"].rolling(14).min()
-    highest_14 = frame["gold_high"].rolling(14).max()
-    frame["stoch_k_14"] = (close - lowest_14) / (highest_14 - lowest_14).replace(0, np.nan)
-    frame["stoch_d_14"] = frame["stoch_k_14"].rolling(3).mean()
-    frame["williams_r_14"] = (highest_14 - close) / (highest_14 - lowest_14).replace(0, np.nan)
-
-    if "gold_volume" in frame:
-        frame["gold_volume_z20"] = rolling_zscore(frame["gold_volume"], 20)
-    if "gold_amount" in frame:
-        frame["gold_amount_z20"] = rolling_zscore(frame["gold_amount"], 20)
-
-    for name in ["dxy", "us10y", "gld", "vix", "vixy", "spx"]:
-        close_column = f"{name}_close"
-        if close_column in frame:
-            for window in [1, 2, 3, 10]:
-                frame[f"{name}_ret_{window}"] = frame[close_column].pct_change(window)
-            frame[f"{name}_ret_5"] = frame[close_column].pct_change(5)
-            frame[f"{name}_ret_20"] = frame[close_column].pct_change(20)
-            frame[f"{name}_z20"] = rolling_zscore(frame[close_column], 20)
-            frame[f"{name}_z60"] = rolling_zscore(frame[close_column], 60)
-            frame[f"{name}_change_20"] = frame[close_column].diff(20)
-            frame[f"{name}_ret_1_z20"] = rolling_zscore(frame[close_column].pct_change(), 20)
-
-    if "spx_close" in frame:
-        frame["spx_realized_vol_20"] = frame["spx_close"].pct_change().rolling(20).std() * math.sqrt(252)
-    if "dxy_close" in frame:
-        frame["gold_dxy_ratio_z60"] = rolling_zscore(close / frame["dxy_close"].replace(0, np.nan), 60)
-        frame["gold_dxy_ratio_z252"] = rolling_zscore(close / frame["dxy_close"].replace(0, np.nan), 252)
-    if "spx_close" in frame:
-        frame["gold_spx_ratio_z60"] = rolling_zscore(close / frame["spx_close"].replace(0, np.nan), 60)
-    if "vix_close" in frame and "vol_20" in frame:
-        frame["vix_gold_vol_spread_z60"] = rolling_zscore(frame["vix_close"] / 100 - frame["vol_20"], 60)
-
-    if "gld_close" in frame and ("gld_amount" in frame or "gld_volume" in frame):
-        volume_dollar_proxy = (
-            (frame["gld_close"] * frame["gld_volume"]).where(
-                np.isfinite(frame["gld_volume"]) & (frame["gld_volume"] > 0)
-            )
-            if "gld_volume" in frame
-            else pd.Series(np.nan, index=frame.index)
-        )
-        dollar_volume = (
-            frame["gld_amount"].where(
-                np.isfinite(frame["gld_amount"]) & (frame["gld_amount"] > 0),
-                volume_dollar_proxy,
-            )
-            if "gld_amount" in frame
-            else volume_dollar_proxy
-        )
-        signed_flow = np.sign(frame["gld_close"].pct_change()).fillna(0) * dollar_volume
-        normalizer = dollar_volume.rolling(60).median().replace(0, np.nan)
-        frame["gld_flow_proxy_20"] = signed_flow.rolling(20).sum() / normalizer
-        frame["gld_flow_proxy_z60"] = rolling_zscore(frame["gld_flow_proxy_20"], 60)
-
-    if "cot_gold_net" in frame:
-        frame["cot_gold_net_chg_4w"] = frame["cot_gold_net"].diff(20)
-        frame["cot_gold_net_z52w"] = rolling_zscore(frame["cot_gold_net"], 252)
-        frame["cot_gold_long_short_ratio"] = frame["cot_gold_long"] / frame["cot_gold_short"].replace(0, np.nan)
-
-    if "cftc_mm_gold_net" in frame:
-        frame["cftc_mm_gold_net_chg_4w"] = frame["cftc_mm_gold_net"].diff(20)
-        frame["cftc_mm_gold_net_z52w"] = rolling_zscore(frame["cftc_mm_gold_net"], 252)
-        frame["cftc_mm_gold_long_short_ratio"] = (
-            frame["cftc_mm_gold_long"] / frame["cftc_mm_gold_short"].replace(0, np.nan)
-        )
-    if "cftc_mm_gold_net_pct_oi" in frame:
-        frame["cftc_mm_gold_net_pct_oi_chg_4w"] = frame["cftc_mm_gold_net_pct_oi"].diff(20)
-        frame["cftc_mm_gold_net_pct_oi_z52w"] = rolling_zscore(frame["cftc_mm_gold_net_pct_oi"], 252)
-
-    for prefix in ["cpi_mom", "core_cpi_mom", "nfp"]:
-        surprise_column = f"{prefix}_surprise"
-        if surprise_column in frame:
-            frame[f"{surprise_column}_change_20"] = frame[surprise_column].diff(20)
-            frame[f"{surprise_column}_z252"] = rolling_zscore(frame[surprise_column], 252)
-
-    if "tips_10y_real_yield" in frame:
-        frame["tips_10y_real_yield_change_20"] = frame["tips_10y_real_yield"].diff(20)
-        frame["tips_10y_real_yield_z60"] = rolling_zscore(frame["tips_10y_real_yield"], 60)
-
-    if "real_rate" in frame:
-        frame["real_rate_change_20"] = frame["real_rate"].diff(20)
-        frame["real_rate_z60"] = rolling_zscore(frame["real_rate"], 60)
-
-    if "real_rate_proxy" in frame:
-        frame["real_rate_proxy_change_20"] = frame["real_rate_proxy"].diff(20)
-        frame["real_rate_proxy_z60"] = rolling_zscore(frame["real_rate_proxy"], 60)
-
-    if "gpr_index" in frame:
-        frame["gpr_index_change_20"] = frame["gpr_index"].diff(20)
-        frame["gpr_index_z60"] = rolling_zscore(frame["gpr_index"], 60)
-    if "gpr_threats" in frame:
-        frame["gpr_threats_z60"] = rolling_zscore(frame["gpr_threats"], 60)
-    if "gpr_acts" in frame:
-        frame["gpr_acts_z60"] = rolling_zscore(frame["gpr_acts"], 60)
-
-    if "fomc_decision" in frame:
-        event = frame["fomc_decision"].fillna(0).astype(float)
-        frame["fomc_event_day"] = event
-        frame["fomc_event_window_3d"] = event.rolling(3, min_periods=1).max().fillna(0)
-        event_dates = frame.index[event > 0]
-        if len(event_dates):
-            next_days = []
-            last_days = []
-            for date in frame.index:
-                next_pos = event_dates.searchsorted(date, side="left")
-                if next_pos < len(event_dates):
-                    next_days.append((event_dates[next_pos] - date).days)
-                else:
-                    next_days.append(np.nan)
-                prev_pos = event_dates.searchsorted(date, side="right") - 1
-                if prev_pos >= 0:
-                    last_days.append((date - event_dates[prev_pos]).days)
-                else:
-                    last_days.append(np.nan)
-            frame["fomc_days_to_next"] = pd.Series(next_days, index=frame.index).clip(0, 60) / 60
-            frame["fomc_days_since_last"] = pd.Series(last_days, index=frame.index).clip(0, 60) / 60
-
-    for window in [10, 20, 60]:
-        frame[f"ret_skew_{window}"] = frame["ret_1"].rolling(window).skew()
-        frame[f"ret_kurt_{window}"] = frame["ret_1"].rolling(window).kurt()
-        frame[f"ret_autocorr_{window}"] = frame["ret_1"].rolling(window).corr(frame["ret_1"].shift(1))
-        frame[f"downside_vol_{window}"] = frame["ret_1"].clip(upper=0).rolling(window).std() * math.sqrt(252)
-        frame[f"upside_vol_{window}"] = frame["ret_1"].clip(lower=0).rolling(window).std() * math.sqrt(252)
-        frame[f"win_rate_{window}"] = (frame["ret_1"] > 0).rolling(window).mean()
-    frame["range_pct_z20"] = rolling_zscore(frame["range_pct"], 20)
-    frame["atr_pct_z60"] = rolling_zscore(frame["atr_pct"], 60)
-    frame["range_expansion_20_60"] = frame["range_pct"].rolling(20).mean() / frame["range_pct"].rolling(60).mean().replace(0, np.nan)
-    frame["downside_upside_ratio_20"] = frame["downside_vol_20"] / frame["upside_vol_20"].replace(0, np.nan)
-
-    frame = add_trend_quality_features(frame)
-
     return frame
 
 
-def feature_columns(frame: pd.DataFrame) -> list[str]:
-    forbidden: set[str] = set()
-    raw_level_suffixes = ("_open", "_high", "_low", "_close", "_volume", "_amount", "_extra1", "_extra2", "_extra3")
-    raw_indicators = {"atr"}
-    allowed_prefixes = (
-        "ret_",
-        "mom_",
-        "sma_gap_",
-        "vol_",
-        "drawdown_",
-        "distance_to_prior_low_",
-        "new_low_",
-        "recent_new_low_",
-        "rebound_from_low_",
-        "range_",
-        "ma_cross_",
-        "vol_ratio_",
-        "ret_vol_adj_",
-        "high_breakout_",
-        "low_breakdown_",
-        "trend_strength",
-        "trend_age_",
-        "momentum_accel_",
-        "oc_ret",
-        "gap_ret",
-        "close_location_",
-        "macd_",
-        "bb_",
-        "stoch_",
-        "williams_",
-        "ret_skew_",
-        "ret_kurt_",
-        "ret_autocorr_",
-        "downside_vol_",
-        "upside_vol_",
-        "win_rate_",
-        "gold_dxy_ratio_",
-        "gold_spx_ratio_",
-        "vix_gold_vol_spread_",
-        "atr_pct_z",
-        "range_expansion_",
-        "downside_upside_ratio_",
-        "adx_",
-        "rsi_",
-        "donchian_",
-        "price_to_high_",
-        "tsmom_score",
-        "trend_quality_score",
-        "cot_",
-        "cftc_",
-        "tips_",
-        "real_rate_",
-        "real_rate_proxy",
-        "gpr_",
-        "fomc_",
-        "cpi_mom_surprise",
-        "core_cpi_mom_surprise",
-        "nfp_surprise",
-        "hmm_prob_",
-        "state_",
-    )
-    allowed_suffixes = (
-        "_ret_1",
-        "_ret_2",
-        "_ret_3",
-        "_ret_5",
-        "_ret_10",
-        "_ret_20",
-        "_ret_1_z20",
-        "_z20",
-        "_z60",
-        "_z252",
-        "_change_20",
-        "_z52w",
-        "_chg_4w",
-    )
-    cols: list[str] = []
-    for column in frame.columns:
-        if column in forbidden:
-            continue
-        if column in raw_indicators:
-            continue
-        if column.endswith(raw_level_suffixes):
-            continue
-        allowed = column.startswith(allowed_prefixes) or column.endswith(allowed_suffixes) or "flow_proxy" in column
-        if allowed and pd.api.types.is_numeric_dtype(frame[column]):
-            cols.append(column)
-    return cols
-
-
-def meta_feature_columns(frame: pd.DataFrame, policy: str = "stable_no_macro") -> list[str]:
-    cols = [column for column in feature_columns(frame) if column != "hmm_raw_state"]
-    if policy == "all":
-        return cols
-    if policy not in {
-        "stable_no_macro",
-        "compact_stable",
-        "event_core",
-        "event_macro",
-        "regime_core",
-        "regime_explainable",
-    }:
-        raise ValueError(f"unknown XGBoost feature policy: {policy}")
-
-    unstable_macro_prefixes = (
-        "cot_",
-        "cftc_",
-        "gpr_",
-        "cpi_mom",
-        "core_cpi_mom",
-        "nfp_",
-        "real_rate",
-        "real_rate_proxy",
-        "tips_",
-        "fomc_",
-    )
-    stable = [column for column in cols if not column.startswith(unstable_macro_prefixes)]
-    if policy == "stable_no_macro":
-        return stable
-
-    if policy in {"event_core", "event_macro"}:
-        event_candidates = [
-            "ret_5",
-            "ret_20",
-            "ret_60",
-            "ret_120",
-            "momentum_accel_20_60",
-            "momentum_accel_60_120",
-            "sma_gap_20",
-            "sma_gap_60",
-            "ma_cross_20_60",
-            "trend_age_120",
-            "high_breakout_120",
-            "drawdown_120",
-            "vol_20",
-            "vol_ratio_20_60",
-            "atr_pct_z60",
-            "range_expansion_20_60",
-            "downside_upside_ratio_20",
-            "adx_14",
-            "rsi_14",
-            "ret_skew_20",
-            "ret_autocorr_20",
-            "dxy_ret_20",
-            "dxy_ret_1_z20",
-            "vix_ret_20",
-            "spx_ret_20",
-            "gold_dxy_ratio_z60",
-            "gld_flow_proxy_z60",
-            "hmm_prob_s1",
-            "hmm_prob_s2",
-            "hmm_prob_s3",
-            "hmm_prob_s4",
-        ]
-        if policy == "event_macro":
-            event_candidates.extend(
-                [
-                    "cot_gold_net_z52w",
-                    "cot_gold_net_chg_4w",
-                    "cftc_mm_gold_net_pct_oi_z52w",
-                    "cftc_mm_gold_net_pct_oi_chg_4w",
-                    "gpr_index_z60",
-                    "gpr_threats_z60",
-                    "cpi_mom_surprise_z252",
-                    "core_cpi_mom_surprise_z252",
-                    "nfp_surprise_z252",
-                    "fomc_days_to_next",
-                    "fomc_days_since_last",
-                ]
-            )
-            return [column for column in event_candidates if column in cols]
-        return [column for column in event_candidates if column in stable]
-
-    if policy in {"regime_core", "regime_explainable"}:
-        regime_candidates = [
-            "ret_20",
-            "ret_60",
-            "ret_120",
-            "ret_252",
-            "momentum_accel_20_60",
-            "momentum_accel_60_120",
-            "sma_gap_20",
-            "sma_gap_60",
-            "sma_gap_120",
-            "sma_gap_252",
-            "ma_cross_20_60",
-            "ma_cross_60_120",
-            "trend_age_120",
-            "drawdown_120",
-            "drawdown_252",
-            "vol_20",
-            "vol_60",
-            "vol_120",
-            "vol_ratio_20_60",
-            "ret_vol_adj_120",
-            "atr_pct_z60",
-            "bb_width_20",
-            "adx_14",
-            "ret_skew_20",
-            "dxy_ret_20",
-            "vix_ret_20",
-            "spx_ret_20",
-            "gold_dxy_ratio_z60",
-            "gold_dxy_ratio_z252",
-            "gld_flow_proxy_z60",
-            "hmm_prob_s1",
-            "hmm_prob_s2",
-            "hmm_prob_s3",
-            "hmm_prob_s4",
-        ]
-        selected = [column for column in regime_candidates if column in stable]
-        if policy == "regime_explainable":
-            selected = [column for column in selected if not column.startswith("hmm_prob_")]
-        return selected
-
-    # Keep one or two representatives from each economic feature family.  The
-    # event sample is small and highly overlapping, so feeding every technical
-    # transformation to a tree model makes fold-to-fold feature selection
-    # unstable even when the individual trees are shallow.
-    compact_candidates = [
-        "ret_1",
-        "ret_5",
-        "ret_20",
-        "ret_60",
-        "ret_120",
-        "sma_gap_20",
-        "sma_gap_60",
-        "ma_cross_20_60",
-        "ma_cross_60_120",
-        "vol_20",
-        "vol_ratio_20_60",
-        "atr_pct",
-        "atr_pct_z60",
-        "drawdown_120",
-        "range_pct_z20",
-        "close_location_20",
-        "macd_hist_norm",
-        "bb_percent_b_20",
-        "bb_width_20",
-        "adx_14",
-        "rsi_14",
-        "tsmom_score",
-        "trend_quality_score",
-        "ret_skew_20",
-        "ret_autocorr_20",
-        "downside_vol_20",
-        "dxy_ret_1",
-        "dxy_ret_20",
-        "dxy_ret_1_z20",
-        "vix_ret_1",
-        "vix_ret_20",
-        "spx_ret_1",
-        "spx_ret_20",
-        "gold_dxy_ratio_z60",
-        "gold_spx_ratio_z60",
-        "vix_gold_vol_spread_z60",
-        "gld_flow_proxy_z60",
-        "hmm_prob_s1",
-        "hmm_prob_s2",
-        "hmm_prob_s3",
-        "hmm_prob_s4",
-    ]
-    return [column for column in compact_candidates if column in stable]
-
-
 def hmm_feature_columns(frame: pd.DataFrame, policy: str = "gold_core") -> list[str]:
-    gold_core = [
-        "ret_20",
-        "vol_20",
-        "sma_gap_60",
-        "drawdown_120",
-    ]
-    market_core = gold_core + [
-        "dxy_ret_20",
-        "real_rate_change_20",
-        "vix_ret_20",
-    ]
-    all_candidates = [
-        "ret_5",
-        "ret_20",
-        "vol_20",
-        "sma_gap_20",
-        "sma_gap_60",
-        "ma_cross_20_60",
-        "atr_pct",
-        "drawdown_120",
-        "trend_strength",
-        "dxy_ret_20",
-        "us10y_change_20",
-        "real_rate_change_20",
-        "real_rate_proxy_change_20",
-        "vix_ret_20",
-        "vixy_ret_20",
-        "gld_flow_proxy_z60",
-        "cot_gold_net_z52w",
-        "cftc_mm_gold_net_pct_oi_z52w",
-        "cpi_mom_surprise_z252",
-        "core_cpi_mom_surprise_z252",
-        "nfp_surprise_z252",
-        "gpr_index_z60",
-    ]
-    policies = {
-        "gold_core": gold_core,
-        "market_core": market_core,
-        "all_available": all_candidates,
-    }
-    if policy not in policies:
+    if policy != "gold_core":
         raise ValueError(f"unknown HMM feature policy: {policy}")
-    return [column for column in policies[policy] if column in frame.columns]
+    return [
+        column
+        for column in ["ret_20", "vol_20", "sma_gap_60", "drawdown_120"]
+        if column in frame.columns
+    ]
 
 
 def fit_hmm(
@@ -1877,10 +1326,6 @@ def fit_hmm(
     usable_train_mask = train_mask & hmm_frame.notna().all(axis=1)
     for state in range(4):
         subset = temp.loc[usable_train_mask & (temp["hmm_raw_state"] == state)]
-        if "vix_ret_20" in subset:
-            risk_series = subset["vix_ret_20"]
-        else:
-            risk_series = subset.get("vixy_ret_20", pd.Series(dtype=float))
         state_stats.append(
             {
                 "state": state,
@@ -1888,13 +1333,12 @@ def fit_hmm(
                 "vol20": subset["vol_20"].mean(),
                 "drawdown": subset["drawdown_120"].mean(),
                 "trend": subset["sma_gap_60"].mean(),
-                "risk": risk_series.mean(),
                 "count": int(len(subset)),
             }
         )
     stats = pd.DataFrame(state_stats).fillna(0)
 
-    panic_state = stats.sort_values(["vol20", "risk"], ascending=False).iloc[0]["state"].item()
+    panic_state = stats.sort_values("vol20", ascending=False).iloc[0]["state"].item()
     remaining = stats[stats["state"] != panic_state].copy()
     bull_state = remaining.sort_values(["trend", "ret20"], ascending=False).iloc[0]["state"].item()
     remaining = remaining[remaining["state"] != bull_state]
@@ -1998,68 +1442,12 @@ def fit_hmm_walk_forward(
     return latest_pipe, latest_mapping, result
 
 
-def primary_long_signal(frame: pd.DataFrame, mode: str = "trend_slow") -> pd.Series:
-    if mode == "trend_slow":
-        return (
-            (frame["gold_close"] > frame["sma_120"])
-            | ((frame["sma_20"] > frame["sma_60"]) & (frame["sma_60"] > frame["sma_120"]))
-        )
-    if mode == "below_sma_60":
-        return frame["gold_close"] < frame["sma_60"]
-    if mode == "tsmom_ensemble":
-        positive_horizons = (
-            (frame["ret_60"] > 0).astype(int)
-            + (frame["ret_120"] > 0).astype(int)
-            + (frame["ret_252"] > 0).astype(int)
-        )
-        return positive_horizons >= 2
-    if mode == "below_sma_120":
-        return frame["gold_close"] < frame["sma_120"]
-    if mode == "dip_recovery_60":
-        return (
-            (frame["gold_close"] < frame["sma_60"])
-            & (frame["gold_close"] > frame["sma_20"])
-            & (frame["ret_5"] > 0)
-        )
-    if mode == "dip_recovery_120":
-        return (
-            (frame["gold_close"] < frame["sma_120"])
-            & (frame["gold_close"] > frame["sma_20"])
-            & (frame["ret_20"] > 0)
-        )
-    if mode == "new_low_240":
-        return frame["new_low_240"] > 0
-    if mode == "dip_recovery_240":
-        return (
-            (frame["recent_new_low_240"] > 0)
-            & (frame["gold_close"] > frame["sma_20"])
-            & (frame["ret_5"] > 0)
-        )
-    if mode == "trend_or_dip_60":
-        return primary_long_signal(frame, "trend_slow") | primary_long_signal(frame, "dip_recovery_60")
-    if mode == "trend_or_dip_120":
-        return primary_long_signal(frame, "trend_slow") | primary_long_signal(frame, "dip_recovery_120")
-    if mode == "trend_or_dip_240":
-        return primary_long_signal(frame, "trend_slow") | primary_long_signal(frame, "dip_recovery_240")
-    if mode == "hmm_trend":
-        return (
-            (frame["market_state"].isin(["牛市", "震荡"]) & (frame["gold_close"] > frame["sma_60"]))
-            | ((frame["gold_close"] > frame["sma_120"]) & (frame["trend_strength"] > -0.015))
-        )
-    if mode == "hmm_quality":
-        trend_slow = primary_long_signal(frame, "trend_slow")
-        return trend_slow & ((frame["market_state"] != "恐慌") | (frame["ret_60"] > 0.08))
-    raise ValueError(f"unknown primary signal mode: {mode}")
-
-
-def make_repeated_events(signal: pd.Series, min_gap: int) -> pd.Series:
-    events = pd.Series(False, index=signal.index)
-    last_pos = -10_000
-    for pos, value in enumerate(signal.fillna(False).to_numpy()):
-        if value and pos - last_pos >= min_gap:
-            events.iloc[pos] = True
-            last_pos = pos
-    return events
+def primary_long_signal(frame: pd.DataFrame) -> pd.Series:
+    """Return the single adopted 120-day trend entry regime."""
+    return (
+        (frame["gold_close"] > frame["sma_120"])
+        | ((frame["sma_20"] > frame["sma_60"]) & (frame["sma_60"] > frame["sma_120"]))
+    )
 
 
 def make_cusum_events(
@@ -2067,10 +1455,8 @@ def make_cusum_events(
     signal: pd.Series,
     threshold_mult: float,
     min_gap: int,
-    direction: str = "abs",
 ) -> pd.Series:
-    if direction not in {"abs", "positive", "negative"}:
-        raise ValueError(f"unknown CUSUM direction: {direction}")
+    """Sample absolute price shocks while the adopted trend regime is active."""
     returns = frame["gold_close"].pct_change().fillna(0)
     daily_vol = returns.ewm(span=50, adjust=False).std().replace(0, np.nan).ffill()
     events = pd.Series(False, index=frame.index)
@@ -2086,14 +1472,7 @@ def make_cusum_events(
         threshold = float(threshold_mult * daily_vol.loc[date])
         s_pos = max(0.0, s_pos + ret)
         s_neg = min(0.0, s_neg + ret)
-        positive_event = s_pos > threshold
-        negative_event = abs(s_neg) > threshold
-        selected_event = (
-            (positive_event or negative_event)
-            if direction == "abs"
-            else positive_event if direction == "positive" else negative_event
-        )
-        if selected_event and pos - last_pos >= min_gap:
+        if (s_pos > threshold or abs(s_neg) > threshold) and pos - last_pos >= min_gap:
             events.iloc[pos] = True
             last_pos = pos
             s_pos = 0.0
@@ -2102,442 +1481,31 @@ def make_cusum_events(
 
 
 def make_meta_events(frame: pd.DataFrame, signal: pd.Series, config: RiskConfig) -> pd.Series:
-    if config.meta_event_kind == "repeated":
-        return make_repeated_events(signal, config.meta_event_gap_days)
-    if config.meta_event_kind == "cusum_abs":
-        return make_cusum_events(
-            frame,
-            signal,
-            config.cusum_threshold_mult,
-            config.meta_event_gap_days,
-            direction="abs",
-        )
-    if config.meta_event_kind == "cusum_positive":
-        return make_cusum_events(
-            frame,
-            signal,
-            config.cusum_threshold_mult,
-            config.meta_event_gap_days,
-            direction="positive",
-        )
-    if config.meta_event_kind == "cusum_negative":
-        return make_cusum_events(
-            frame,
-            signal,
-            config.cusum_threshold_mult,
-            config.meta_event_gap_days,
-            direction="negative",
-        )
-    raise ValueError(f"unknown meta event kind: {config.meta_event_kind}")
-
-
-def triple_barrier_labels(
-    frame: pd.DataFrame,
-    events: pd.Series,
-    config: RiskConfig,
-) -> pd.DataFrame:
-    event_dates = frame.index[events.fillna(False)]
-    rows: list[dict[str, Any]] = []
-    close = frame["gold_close"]
-    high = frame["gold_high"]
-    low = frame["gold_low"]
-    atr = frame["atr"]
-    for date in event_dates:
-        loc = frame.index.get_loc(date)
-        entry_loc = loc + 1
-        end_loc = entry_loc + config.prediction_horizon_days - 1
-        if end_loc >= len(frame) or not np.isfinite(atr.loc[date]):
-            continue
-        entry_date = frame.index[entry_loc]
-        entry_open = frame["gold_open"].iloc[entry_loc] if "gold_open" in frame else np.nan
-        entry = float(entry_open) if np.isfinite(entry_open) and entry_open > 0 else float(close.iloc[entry_loc])
-        upper = entry + config.profit_atr_multiple * atr.loc[date]
-        lower = entry - config.stop_atr_multiple * atr.loc[date]
-        label = 0.0
-        exit_date = frame.index[end_loc]
-        exit_reason = "vertical"
-        exit_price = float(close.iloc[end_loc])
-        for future_loc in range(entry_loc, end_loc + 1):
-            future_date = frame.index[future_loc]
-            hit_upper = high.iloc[future_loc] >= upper
-            hit_lower = low.iloc[future_loc] <= lower
-            if hit_upper and hit_lower:
-                label = 0.0
-                exit_date = future_date
-                exit_reason = "both_stop_first"
-                exit_price = lower
-                break
-            if hit_upper:
-                label = 1.0
-                exit_date = future_date
-                exit_reason = "profit"
-                exit_price = upper
-                break
-            if hit_lower:
-                label = 0.0
-                exit_date = future_date
-                exit_reason = "stop"
-                exit_price = lower
-                break
-        rows.append(
-            {
-                "date": date,
-                "tb_entry_date": entry_date,
-                "tb_entry_price": entry,
-                "tb_label": label,
-                "tb_exit_date": exit_date,
-                "tb_exit_reason": exit_reason,
-                "tb_forward_return": exit_price / entry - 1,
-            }
-        )
-    if not rows:
-        return pd.DataFrame(
-            columns=[
-                "tb_entry_date",
-                "tb_entry_price",
-                "tb_label",
-                "tb_exit_date",
-                "tb_exit_reason",
-                "tb_forward_return",
-            ]
-        )
-    return pd.DataFrame(rows).set_index("date").sort_index()
-
-
-def fit_meta_xgb_model(target: pd.Series | None = None, config: RiskConfig | None = None) -> XGBClassifier:
-    scale_pos_weight = 1.0
-    if target is not None and len(target):
-        y = target.astype(int)
-        positives = max(float((y == 1).sum()), 1.0)
-        negatives = max(float((y == 0).sum()), 1.0)
-        cap = config.xgboost_scale_pos_weight_cap if config is not None else 6.0
-        scale_pos_weight = min(negatives / positives, cap)
-    return XGBClassifier(
-        n_estimators=170,
-        max_depth=1,
-        learning_rate=0.04,
-        subsample=0.85,
-        colsample_bytree=0.75,
-        reg_lambda=14.0,
-        reg_alpha=1.20,
-        min_child_weight=8,
-        gamma=0.05,
-        scale_pos_weight=scale_pos_weight,
-        max_delta_step=1,
-        objective="binary:logistic",
-        eval_metric="logloss",
-        random_state=7,
-        n_jobs=4,
-        tree_method="hist",
+    return make_cusum_events(
+        frame,
+        signal,
+        config.cusum_threshold_mult,
+        config.meta_event_gap_days,
     )
-
-
-def purged_training_events(event_frame: pd.DataFrame, prediction_start: pd.Timestamp) -> pd.DataFrame:
-    """Return labels whose full barrier path was observable before prediction_start."""
-    exit_dates = pd.to_datetime(event_frame["tb_exit_date"], errors="coerce")
-    return event_frame.loc[
-        event_frame["tb_label"].notna()
-        & exit_dates.notna()
-        & (exit_dates < prediction_start)
-    ]
-
-
-def train_triple_barrier_meta_model(
-    frame: pd.DataFrame,
-    events: pd.Series,
-    labels: pd.DataFrame,
-    cols: list[str],
-    initial_train_end: pd.Timestamp,
-    validation_end: pd.Timestamp,
-    test_mask: pd.Series,
-    config: RiskConfig,
-) -> tuple[Pipeline, pd.Series, dict[str, float], pd.DataFrame]:
-    cols = [
-        column
-        for column in cols
-        if frame.loc[frame.index <= initial_train_end, column].notna().sum() >= 100
-    ]
-    event_frame = frame.join(labels, how="left")
-    event_frame["is_meta_event"] = events.reindex(frame.index).fillna(False)
-    all_index = frame.index
-    start_pos = all_index.get_indexer([initial_train_end], method="nearest")[0] + 1
-    probabilities = pd.Series(np.nan, index=frame.index, name="p_profit_first_raw")
-    importances: list[pd.DataFrame] = []
-    last_pipe: Pipeline | None = None
-
-    for pred_start in range(start_pos, len(all_index), config.retrain_every_days * 2):
-        pred_end = min(pred_start + config.retrain_every_days * 2, len(all_index))
-        prediction_start = all_index[pred_start]
-        train_events = purged_training_events(event_frame, prediction_start)
-        predict_index = all_index[pred_start:pred_end]
-        predict_events = event_frame.loc[predict_index]
-        predict_events = predict_events[predict_events["is_meta_event"]]
-        if len(train_events) < 80 or len(predict_events) == 0 or train_events["tb_label"].nunique() < 2:
-            continue
-        train_target = train_events["tb_label"].astype(int)
-        pipe = Pipeline([("imputer", SimpleImputer(strategy="median")), ("model", fit_meta_xgb_model(train_target, config))])
-        pipe.fit(train_events[cols], train_target)
-        probabilities.loc[predict_events.index] = pipe.predict_proba(predict_events[cols])[:, 1]
-        fold_number = len(importances) + 1
-        importances.append(
-            pd.DataFrame(
-                {
-                    "feature": cols,
-                    "importance": pipe.named_steps["model"].feature_importances_,
-                    "fold": fold_number,
-                }
-            )
-        )
-        last_pipe = pipe
-
-    if last_pipe is None:
-        raise RuntimeError("Triple-barrier meta model failed to train any fold")
-
-    validation_events = event_frame.loc[
-        (event_frame.index > initial_train_end)
-        & (event_frame.index <= validation_end)
-        & event_frame["tb_label"].notna()
-        & probabilities.notna()
-    ]
-    test_events = event_frame.loc[
-        test_mask
-        & event_frame["tb_label"].notna()
-        & probabilities.notna()
-    ]
-
-    raw_validation_auc = float("nan")
-    raw_test_auc = float("nan")
-    xgboost_enabled = False
-    xgboost_statistical_valid = False
-    validation_buy_signals = 0
-    validation_buy_precision = float("nan")
-    validation_buy_recall = float("nan")
-    validation_base_rate = float("nan")
-    validation_buy_precision_lift = float("nan")
-    if len(validation_events) > 20 and validation_events["tb_label"].nunique() == 2:
-        y_validation = validation_events["tb_label"].astype(int)
-        p_validation = probabilities.loc[validation_events.index]
-        validation_buy_pred = p_validation >= config.up_threshold
-        validation_base_rate = float(y_validation.mean())
-        raw_validation_auc = float(
-            roc_auc_score(y_validation, p_validation)
-        )
-        validation_buy_signals = int(validation_buy_pred.sum())
-        validation_buy_precision = float(
-            precision_score(y_validation, validation_buy_pred, zero_division=0)
-        )
-        validation_buy_recall = float(
-            recall_score(y_validation, validation_buy_pred, zero_division=0)
-        )
-        if validation_base_rate > 0:
-            validation_buy_precision_lift = validation_buy_precision / validation_base_rate
-        xgboost_statistical_valid = raw_validation_auc >= config.xgboost_min_validation_auc
-        # Threshold selection is performed later on the validation strategy,
-        # after probabilities from all walk-forward folds are available.
-        xgboost_enabled = xgboost_statistical_valid
-    raw_probabilities = probabilities.copy()
-    raw_probabilities.name = "p_profit_first"
-
-    if len(test_events) > 20 and test_events["tb_label"].nunique() == 2:
-        raw_test_auc = float(roc_auc_score(test_events["tb_label"], probabilities.loc[test_events.index]))
-
-    test_probability_index = test_events.index
-    metrics = {
-        "target": "triple_barrier_profit_first",
-        "raw_validation_auc": raw_validation_auc,
-        "raw_test_auc": raw_test_auc,
-        "probability_orientation": "raw_no_inverse",
-        "feature_policy": config.xgboost_feature_policy,
-        "feature_count": int(len(cols)),
-        "scale_pos_weight_cap": config.xgboost_scale_pos_weight_cap,
-        "model_variant": f"regularized_stump_unweighted_{config.xgboost_feature_policy}",
-        "xgboost_statistical_valid": bool(xgboost_statistical_valid),
-        "xgboost_model_gate_pass": bool(xgboost_enabled),
-        "xgboost_strategy_gate_pass": False,
-        "xgboost_enabled": bool(xgboost_enabled),
-        "xgboost_min_validation_auc": config.xgboost_min_validation_auc,
-        "validation_base_rate": validation_base_rate,
-        "validation_buy_signals": validation_buy_signals,
-        "validation_buy_precision": validation_buy_precision,
-        "validation_buy_precision_lift": validation_buy_precision_lift,
-        "validation_buy_recall": validation_buy_recall,
-        "validation_average_precision": (
-            float(average_precision_score(y_validation, p_validation))
-            if len(validation_events) > 20 and validation_events["tb_label"].nunique() == 2
-            else float("nan")
-        ),
-        "xgboost_min_validation_buy_signals": config.xgboost_min_validation_buy_signals,
-        "xgboost_min_validation_precision": config.xgboost_min_validation_precision,
-        "xgboost_min_validation_recall": config.xgboost_min_validation_recall,
-        "xgboost_gate_reason": (
-            "trading_gate_pass"
-            if xgboost_enabled
-            else (
-                "statistical_validation_pass_trade_quality_below_threshold"
-                if xgboost_statistical_valid
-                else "validation_auc_below_threshold"
-            )
-        ),
-        "walk_forward_folds": int(len(importances)),
-        "meta_events": int(labels["tb_label"].notna().sum()),
-        "meta_positive_rate": float(labels["tb_label"].mean()) if len(labels) else float("nan"),
-        "event_gap_days": config.meta_event_gap_days,
-        "event_kind": config.meta_event_kind,
-        "cusum_threshold_mult": config.cusum_threshold_mult,
-        "primary_signal_mode": config.primary_signal_mode,
-        "profit_atr_multiple": config.profit_atr_multiple,
-        "stop_atr_multiple": config.stop_atr_multiple,
-        "vertical_barrier_days": config.prediction_horizon_days,
-    }
-    if len(test_probability_index) > 20 and event_frame.loc[test_probability_index, "tb_label"].nunique() == 2:
-        y_test = event_frame.loc[test_probability_index, "tb_label"]
-        p_test = raw_probabilities.loc[test_probability_index]
-        try:
-            metrics["test_auc"] = float(roc_auc_score(y_test, p_test))
-            metrics["test_brier"] = float(brier_score_loss(y_test, p_test))
-            metrics["test_accuracy_0_5"] = float(accuracy_score(y_test, p_test > 0.5))
-        except ValueError:
-            metrics["test_auc"] = float("nan")
-
-    importance_frame = pd.concat(importances).groupby("feature", as_index=False).agg(
-        importance=("importance", "mean"),
-        importance_std=("importance", "std"),
-        fold_selection_rate=("importance", lambda values: float((values > 0).mean())),
-    )
-    importance_frame["importance_std"] = importance_frame["importance_std"].fillna(0.0)
-    importance_frame = importance_frame.sort_values("importance", ascending=False)
-    return last_pipe, raw_probabilities, metrics, importance_frame
-
-
-def safe_auc(y_true: pd.Series, y_score: pd.Series) -> float:
-    if len(y_true) < 10 or y_true.nunique() < 2:
-        return float("nan")
-    return float(roc_auc_score(y_true, y_score))
-
-
-def event_validation_metrics(
-    subset: pd.DataFrame,
-    segment_type: str,
-    segment: str,
-    config: RiskConfig,
-) -> dict[str, Any]:
-    subset = subset.dropna(subset=["tb_label", "p_profit_first"])
-    row: dict[str, Any] = {
-        "segment_type": segment_type,
-        "segment": segment,
-        "n": int(len(subset)),
-        "positive_rate": float(subset["tb_label"].mean()) if len(subset) else float("nan"),
-        "mean_probability": float(subset["p_profit_first"].mean()) if len(subset) else float("nan"),
-    }
-    if len(subset) < 10 or subset["tb_label"].nunique() < 2:
-        row.update(
-            {
-                "auc": float("nan"),
-                "brier": float("nan"),
-                "accuracy_0_5": float("nan"),
-                "precision_0_5": float("nan"),
-                "recall_0_5": float("nan"),
-                "precision_buy_threshold": float("nan"),
-                "recall_buy_threshold": float("nan"),
-            }
-        )
-        return row
-    y_true = subset["tb_label"].astype(int)
-    probability = subset["p_profit_first"]
-    pred_05 = probability >= 0.5
-    pred_buy = probability >= config.up_threshold
-    row.update(
-        {
-            "auc": safe_auc(y_true, probability),
-            "brier": float(brier_score_loss(y_true, probability)),
-            "accuracy_0_5": float(accuracy_score(y_true, pred_05)),
-            "precision_0_5": float(precision_score(y_true, pred_05, zero_division=0)),
-            "recall_0_5": float(recall_score(y_true, pred_05, zero_division=0)),
-            "precision_buy_threshold": float(precision_score(y_true, pred_buy, zero_division=0)),
-            "recall_buy_threshold": float(recall_score(y_true, pred_buy, zero_division=0)),
-        }
-    )
-    return row
-
-
-def build_model_validation_report(
-    frame: pd.DataFrame,
-    labels: pd.DataFrame,
-    probabilities: pd.Series,
-    train_end: pd.Timestamp,
-    validation_end: pd.Timestamp,
-    test_mask: pd.Series,
-    config: RiskConfig,
-    entry_threshold: float | None = None,
-) -> list[dict[str, Any]]:
-    event_frame = frame.join(labels, how="left")
-    event_frame["p_profit_first"] = probabilities
-    event_frame = event_frame[event_frame["tb_label"].notna() & event_frame["p_profit_first"].notna()].copy()
-    rows: list[dict[str, Any]] = []
-    report_config = config
-    if entry_threshold is not None:
-        report_config = replace(config, up_threshold=float(entry_threshold))
-    rows.append(
-        event_validation_metrics(
-            event_frame[(event_frame.index > train_end) & (event_frame.index <= validation_end)],
-            "sample",
-            "validation",
-            report_config,
-        )
-    )
-    test_mask_series = pd.Series(test_mask, index=frame.index).reindex(event_frame.index).fillna(False).astype(bool)
-    test_events = event_frame[test_mask_series]
-    rows.append(event_validation_metrics(test_events, "sample", "test", report_config))
-
-    for year, subset in test_events.groupby(test_events.index.year):
-        rows.append(event_validation_metrics(subset, "test_year", str(year), report_config))
-
-    if "market_state" in test_events:
-        for state, subset in test_events.groupby("market_state"):
-            rows.append(event_validation_metrics(subset, "test_hmm_state", str(state), report_config))
-
-    report = pd.DataFrame(rows)
-    report.to_csv(LOCAL_LOGS / "gold_model_validation.csv", index=False, encoding="utf-8-sig")
-    return rows
 
 
 def generate_signals(
     frame: pd.DataFrame,
-    probabilities: pd.Series,
     config: RiskConfig,
     *,
-    use_xgboost: bool = True,
-    use_atr: bool = True,
-    primary_mode: str | None = None,
-    entry_threshold: float | None = None,
     start_at: pd.Timestamp | None = None,
-    use_hmm_exit: bool | None = None,
-    use_trend_exit: bool | None = None,
 ) -> pd.DataFrame:
     signal_frame = frame.copy()
-    primary_signal = primary_long_signal(signal_frame, primary_mode or config.primary_signal_mode)
+    primary_signal = primary_long_signal(signal_frame)
     events = make_meta_events(signal_frame, primary_signal, config)
-    threshold = config.up_threshold if entry_threshold is None else float(entry_threshold)
-    accepted_events = events & (probabilities >= threshold) if use_xgboost else events
-    atr_stop_enabled = bool(use_atr and config.atr_stop_enabled)
-    atr_profit_enabled = bool(use_atr and config.atr_profit_enabled)
-    hmm_exit_enabled = config.hmm_exit_enabled if use_hmm_exit is None else bool(use_hmm_exit)
-    trend_exit_enabled = config.trend_exit_enabled if use_trend_exit is None else bool(use_trend_exit)
-    signal_frame["p_profit_first_event"] = probabilities
-    signal_frame["p_profit_first"] = probabilities.ffill()
-    signal_frame["p_up_30d"] = signal_frame["p_profit_first"]
     signal_frame["tb_event"] = events
-    signal_frame["tb_accepted_event"] = accepted_events
+    signal_frame["tb_accepted_event"] = events
     signal_frame["primary_trend_signal"] = primary_signal
-    signal_frame["xgboost_used_for_signal"] = bool(use_xgboost)
-    signal_frame["atr_risk_used_for_signal"] = bool(use_atr)
-    signal_frame["atr_stop_enabled"] = atr_stop_enabled
-    signal_frame["atr_profit_enabled"] = atr_profit_enabled
-    signal_frame["hmm_exit_enabled"] = hmm_exit_enabled
-    signal_frame["trend_exit_enabled"] = trend_exit_enabled
+    signal_frame["atr_stop_enabled"] = bool(config.atr_stop_enabled)
+    signal_frame["atr_profit_enabled"] = bool(config.atr_profit_enabled)
+    signal_frame["hmm_exit_enabled"] = bool(config.hmm_exit_enabled)
     signal_frame["target_position_override"] = np.nan
     signal_frame["payoff_ratio"] = config.profit_atr_multiple / config.stop_atr_multiple
-    signal_frame["historical_train_win_rate"] = np.nan
     strong_trend = (
         config.dynamic_trend_risk_enabled
         & (signal_frame["gold_close"] > signal_frame["sma_120"])
@@ -2559,11 +1527,10 @@ def generate_signals(
     fill_prices = []
     in_position = False
     current_position = 0.0
-    entry = np.nan
     stop_price = np.nan
     take_profit_price = np.nan
     hmm_exit_streak = 0
-    accepted_arr = accepted_events.reindex(signal_frame.index).fillna(False).to_numpy()
+    accepted_arr = events.reindex(signal_frame.index).fillna(False).to_numpy()
 
     for i, row in enumerate(signal_frame.itertuples()):
         action = "持有/观望"
@@ -2592,23 +1559,20 @@ def generate_signals(
             continue
 
         if in_position:
-            hit_profit = atr_profit_enabled and np.isfinite(take_profit_price) and high >= take_profit_price
-            hit_stop = atr_stop_enabled and np.isfinite(stop_price) and low <= stop_price
-            model_exit = (
-                use_xgboost
-                and config.xgboost_use_model_exit
-                and bool(row.tb_event)
-                and np.isfinite(row.p_profit_first_event)
-                and row.p_profit_first_event <= config.down_threshold
+            hit_profit = (
+                config.atr_profit_enabled
+                and np.isfinite(take_profit_price)
+                and high >= take_profit_price
             )
-            hmm_exit_setup = (
-                row.market_state in ["熊市", "恐慌"]
-                and close < row.sma_60
+            hit_stop = (
+                config.atr_stop_enabled
+                and np.isfinite(stop_price)
+                and low <= stop_price
             )
+            hmm_exit_setup = row.market_state in ["熊市", "恐慌"] and close < row.sma_60
             hmm_exit_streak = hmm_exit_streak + 1 if hmm_exit_setup else 0
-            hmm_exit = hmm_exit_enabled and hmm_exit_streak >= config.hmm_exit_confirmation_days
-            trend_exit = trend_exit_enabled and not bool(row.primary_trend_signal)
-            if hit_stop or hit_profit or model_exit or hmm_exit or trend_exit:
+            hmm_exit = config.hmm_exit_enabled and hmm_exit_streak >= config.hmm_exit_confirmation_days
+            if hit_stop or hit_profit or hmm_exit:
                 if hit_stop:
                     fill_price = min(float(row.gold_open), stop_price) if np.isfinite(row.gold_open) else stop_price
                 elif hit_profit:
@@ -2628,12 +1592,8 @@ def generate_signals(
                     exit_reason = "atr_stop"
                 elif hit_profit:
                     exit_reason = "atr_take_profit"
-                elif model_exit:
-                    exit_reason = "xgboost_down_threshold"
-                elif hmm_exit:
-                    exit_reason = "hmm_trend_exit"
                 else:
-                    exit_reason = "primary_trend_exit"
+                    exit_reason = "hmm_trend_exit"
             else:
                 action = "持有"
                 guide = "持有"
@@ -2641,15 +1601,21 @@ def generate_signals(
         if not in_position and not exited_this_bar and accepted_arr[i] and np.isfinite(atr):
             in_position = True
             current_position = risk_position_size(close, atr, config, trend_risk_budget(row, config))
-            entry = close
-            fill_price = entry
-            stop_price = entry - config.stop_atr_multiple * atr if atr_stop_enabled else np.nan
-            take_profit_price = entry + config.profit_atr_multiple * atr if atr_profit_enabled else np.nan
+            fill_price = close
+            stop_price = (
+                close - config.stop_atr_multiple * atr
+                if config.atr_stop_enabled
+                else np.nan
+            )
+            take_profit_price = (
+                close + config.profit_atr_multiple * atr
+                if config.atr_profit_enabled
+                else np.nan
+            )
             hmm_exit_streak = 0
             action = "买入"
             raw_signal = "long"
             guide = "买入"
-            exit_reason = ""
         elif not in_position and action != "卖出":
             current_position = 0.0
             raw_signal = "flat" if flat_condition else "hold"
@@ -2672,211 +1638,7 @@ def generate_signals(
     signal_frame["raw_signal"] = raw_signals
     signal_frame["guide"] = guides
     signal_frame["fill_price"] = fill_prices
-    signal_frame["entry_threshold"] = threshold if use_xgboost else np.nan
     return signal_frame
-
-
-def backtest(signal_frame: pd.DataFrame, test_mask: pd.Series) -> tuple[pd.DataFrame, dict[str, float]]:
-    bt = signal_frame.loc[test_mask].copy()
-    previous_position = bt["position"].shift(1).fillna(0)
-    previous_close = bt["gold_close"].shift(1)
-    mark_price = bt["gold_close"].copy()
-    if "fill_price" in bt:
-        barrier_exit = (
-            (previous_position > 0)
-            & (bt["position"] <= 0)
-            & bt["exit_reason"].isin(["atr_stop", "atr_take_profit"])
-            & bt["fill_price"].notna()
-        )
-        mark_price.loc[barrier_exit] = bt.loc[barrier_exit, "fill_price"]
-    held_return = mark_price / previous_close - 1
-    bt["strategy_ret"] = previous_position * held_return.fillna(0)
-    bt["benchmark_ret"] = bt["gold_close"].pct_change().fillna(0)
-    bt["turnover"] = bt["position"].diff().abs().fillna(bt["position"].abs())
-    bt["equity"] = (1 + bt["strategy_ret"]).cumprod()
-    bt["benchmark_equity"] = (1 + bt["benchmark_ret"]).cumprod()
-    bt["drawdown"] = bt["equity"] / bt["equity"].cummax() - 1
-
-    days = max(len(bt), 1)
-    total_return = bt["equity"].iloc[-1] - 1
-    benchmark_return = bt["benchmark_equity"].iloc[-1] - 1
-    annual_return = (bt["equity"].iloc[-1]) ** (252 / days) - 1
-    annual_vol = bt["strategy_ret"].std() * math.sqrt(252)
-    sharpe = (
-        bt["strategy_ret"].mean() / bt["strategy_ret"].std() * math.sqrt(252)
-        if bt["strategy_ret"].std() and np.isfinite(bt["strategy_ret"].std())
-        else 0.0
-    )
-    max_drawdown = bt["drawdown"].min()
-    active_days = float((bt["position"].shift(1).fillna(0) > 0).mean())
-    win_days = bt.loc[bt["strategy_ret"] != 0, "strategy_ret"]
-    win_rate = float((win_days > 0).mean()) if len(win_days) else 0.0
-
-    metrics = {
-        "execution_model": "close_signal_with_exact_atr_barrier_fill",
-        "total_return": float(total_return),
-        "benchmark_return": float(benchmark_return),
-        "annual_return": float(annual_return),
-        "annual_vol": float(annual_vol),
-        "sharpe": float(sharpe),
-        "max_drawdown": float(max_drawdown),
-        "active_day_ratio": active_days,
-        "daily_win_rate_when_active": win_rate,
-        "test_trades": int(bt["execution_action"].isin(["买入", "卖出"]).sum()) if "execution_action" in bt else 0,
-        "turnover": float(bt["turnover"].sum()),
-    }
-    for cost_bps in [2, 5]:
-        net_ret = bt["strategy_ret"] - bt["turnover"] * (cost_bps / 10000)
-        net_equity = (1 + net_ret).cumprod()
-        net_drawdown = net_equity / net_equity.cummax() - 1
-        net_annual_vol = net_ret.std() * math.sqrt(252)
-        metrics[f"net_total_return_{cost_bps}bps"] = float(net_equity.iloc[-1] - 1)
-        metrics[f"net_sharpe_{cost_bps}bps"] = (
-            float(net_ret.mean() / net_ret.std() * math.sqrt(252)) if net_ret.std() else 0.0
-        )
-        metrics[f"net_max_drawdown_{cost_bps}bps"] = float(net_drawdown.min())
-    return bt, metrics
-
-
-def apply_xgboost_strategy_gate(
-    frame: pd.DataFrame,
-    probabilities: pd.Series,
-    labels: pd.DataFrame,
-    config: RiskConfig,
-    validation_mask: pd.Series,
-    model_metrics: dict[str, Any],
-) -> dict[str, Any]:
-    validation_mask_series = pd.Series(validation_mask, index=frame.index).astype(bool)
-    validation_dates = frame.index[validation_mask_series]
-    validation_start = validation_dates.min()
-    fallback_signals = generate_signals(
-        frame,
-        probabilities,
-        config,
-        use_xgboost=False,
-        use_atr=True,
-        start_at=validation_start,
-    )
-    _, fallback_metrics = backtest_next_open(
-        fallback_signals,
-        validation_mask,
-        config,
-        cost_bps=5.0,
-        write_log=False,
-    )
-
-    event_validation = labels.join(probabilities.rename("probability"), how="inner")
-    event_validation = event_validation.loc[
-        validation_mask_series.reindex(event_validation.index).fillna(False)
-        & event_validation["tb_label"].notna()
-        & event_validation["probability"].notna()
-    ]
-    y_validation = event_validation["tb_label"].astype(int)
-    base_rate = float(y_validation.mean()) if len(y_validation) else float("nan")
-    candidates: list[dict[str, Any]] = []
-    for threshold in config.xgboost_entry_thresholds:
-        predicted_buy = event_validation["probability"] >= threshold
-        signal_count = int(predicted_buy.sum())
-        coverage = signal_count / len(event_validation) if len(event_validation) else 0.0
-        precision = float(precision_score(y_validation, predicted_buy, zero_division=0)) if len(y_validation) else 0.0
-        recall = float(recall_score(y_validation, predicted_buy, zero_division=0)) if len(y_validation) else 0.0
-        precision_lift = precision / base_rate if base_rate > 0 else float("nan")
-        xgboost_signals = generate_signals(
-            frame,
-            probabilities,
-            config,
-            use_xgboost=True,
-            use_atr=True,
-            entry_threshold=threshold,
-            start_at=validation_start,
-        )
-        _, xgboost_metrics = backtest_next_open(
-            xgboost_signals,
-            validation_mask,
-            config,
-            cost_bps=5.0,
-            write_log=False,
-        )
-        return_uplift = xgboost_metrics["total_return"] - fallback_metrics["total_return"]
-        sharpe_uplift = xgboost_metrics["sharpe"] - fallback_metrics["sharpe"]
-        trade_quality_pass = (
-            signal_count >= config.xgboost_min_validation_buy_signals
-            and coverage >= config.xgboost_min_validation_coverage
-            and precision >= config.xgboost_min_validation_precision
-            and recall >= config.xgboost_min_validation_recall
-            and np.isfinite(precision_lift)
-            and precision_lift >= config.xgboost_min_precision_lift
-        )
-        strategy_evidence_pass = xgboost_metrics["test_trades"] >= config.xgboost_min_validation_strategy_trades
-        candidates.append(
-            {
-                "threshold": float(threshold),
-                "signals": signal_count,
-                "coverage": float(coverage),
-                "precision": precision,
-                "recall": recall,
-                "precision_lift": precision_lift,
-                "net_total_return_5bps": float(xgboost_metrics["total_return"]),
-                "net_sharpe_5bps": float(xgboost_metrics["sharpe"]),
-                "return_uplift": float(return_uplift),
-                "sharpe_uplift": float(sharpe_uplift),
-                "trade_quality_pass": bool(trade_quality_pass),
-                "executed_trades": int(xgboost_metrics["test_trades"]),
-                "strategy_evidence_pass": bool(strategy_evidence_pass),
-            }
-        )
-
-    eligible = [
-        candidate
-        for candidate in candidates
-        if candidate["trade_quality_pass"]
-        and candidate["strategy_evidence_pass"]
-        and candidate["return_uplift"] >= config.xgboost_min_validation_strategy_uplift
-        and candidate["sharpe_uplift"] >= 0
-    ]
-    quality_candidates = [candidate for candidate in candidates if candidate["trade_quality_pass"]]
-    ranked = eligible or quality_candidates or candidates
-    selected = max(ranked, key=lambda item: (item["net_sharpe_5bps"], item["net_total_return_5bps"]))
-    strategy_gate_pass = bool(selected in eligible)
-    model_gate_pass = bool(model_metrics.get("xgboost_statistical_valid", False) and selected["trade_quality_pass"])
-    model_metrics.update(
-        {
-            "xgboost_model_gate_pass": model_gate_pass,
-            "xgboost_strategy_gate_pass": bool(strategy_gate_pass),
-            "selected_entry_threshold": selected["threshold"],
-            "selected_validation_signals": selected["signals"],
-            "selected_validation_coverage": selected["coverage"],
-            "selected_validation_precision": selected["precision"],
-            "selected_validation_recall": selected["recall"],
-            "selected_validation_precision_lift": selected["precision_lift"],
-            "selected_validation_executed_trades": selected["executed_trades"],
-            "selected_validation_strategy_evidence_pass": selected["strategy_evidence_pass"],
-            "threshold_validation": candidates,
-            "xgboost_min_validation_strategy_uplift": config.xgboost_min_validation_strategy_uplift,
-            "xgboost_min_validation_strategy_trades": config.xgboost_min_validation_strategy_trades,
-            "validation_fallback_total_return": float(fallback_metrics["total_return"]),
-            "validation_xgboost_hard_total_return": selected["net_total_return_5bps"],
-            "validation_xgboost_hard_return_uplift": selected["return_uplift"],
-            "validation_fallback_sharpe": float(fallback_metrics["sharpe"]),
-            "validation_xgboost_hard_sharpe": selected["net_sharpe_5bps"],
-            "validation_xgboost_hard_sharpe_uplift": selected["sharpe_uplift"],
-        }
-    )
-    if not model_gate_pass:
-        model_metrics["xgboost_enabled"] = False
-        model_metrics["xgboost_gate_reason"] = "validation_trade_quality_below_threshold"
-    elif not strategy_gate_pass:
-        model_metrics["xgboost_enabled"] = False
-        model_metrics["xgboost_gate_reason"] = (
-            "model_gate_pass_strategy_trade_evidence_below_threshold"
-            if not selected["strategy_evidence_pass"]
-            else "model_gate_pass_strategy_uplift_below_threshold"
-        )
-    else:
-        model_metrics["xgboost_enabled"] = True
-        model_metrics["xgboost_gate_reason"] = "model_and_strategy_gate_pass"
-    return model_metrics
-
 
 def backtest_next_open(
     signal_frame: pd.DataFrame,
@@ -3117,23 +1879,10 @@ def backtest_next_open(
             hmm_exit_setup = row["market_state"] in ["熊市", "恐慌"] and close_price < float(row["sma_60"])
             hmm_exit_enabled = bool(row.get("hmm_exit_enabled", config.hmm_exit_enabled))
             hmm_exit_streak = hmm_exit_streak + 1 if hmm_exit_enabled and hmm_exit_setup else 0
-            model_exit = (
-                config.xgboost_use_model_exit
-                and bool(row.get("tb_event", False))
-                and np.isfinite(row.get("p_profit_first_event", np.nan))
-                and float(row["p_profit_first_event"]) <= config.down_threshold
-            )
-            trend_exit = bool(row.get("trend_exit_enabled", config.trend_exit_enabled)) and not bool(
-                row.get("primary_trend_signal", False)
-            )
             hmm_exit = hmm_exit_enabled and hmm_exit_streak >= config.hmm_exit_confirmation_days
-            pending_exit = bool(model_exit or hmm_exit or trend_exit)
-            if model_exit:
-                pending_exit_reason = "next_open_model_exit"
-            elif hmm_exit:
+            pending_exit = bool(hmm_exit)
+            if hmm_exit:
                 pending_exit_reason = "next_open_hmm_exit"
-            elif trend_exit:
-                pending_exit_reason = "next_open_primary_trend_exit"
         else:
             target_override = float(row.get("target_position_override", np.nan))
             entry_ready = np.isfinite(row.get("atr", np.nan)) or np.isfinite(target_override)
@@ -3286,55 +2035,6 @@ def backtest_next_open(
     return live, metrics
 
 
-def make_position_signal_frame(
-    frame: pd.DataFrame,
-    position: pd.Series,
-    name: str,
-    start_at: pd.Timestamp,
-) -> pd.DataFrame:
-    """Convert a long-only target rule into intents for the strict next-open engine."""
-    out = frame.copy()
-    aligned = position.reindex(out.index).fillna(0.0).astype(float).clip(0.0, 1.0)
-    active = pd.Series(out.index >= start_at, index=out.index)
-    prior = aligned.shift(1).fillna(0.0)
-    entry_event = active & (aligned > 0) & ((prior <= 0) | (out.index == start_at))
-    out["position"] = 0.0
-    out["execution_action"] = "持有/观望"
-    out["raw_signal"] = "flat"
-    out["guide"] = "卖出/空仓"
-    out["atr_stop"] = np.nan
-    out["tb_take_profit"] = np.nan
-    out["tb_event"] = entry_event
-    out["tb_accepted_event"] = entry_event
-    out["primary_trend_signal"] = aligned > 0
-    out["atr_stop_enabled"] = False
-    out["atr_profit_enabled"] = False
-    out["hmm_exit_enabled"] = False
-    out["trend_exit_enabled"] = True
-    out["target_position_override"] = aligned
-    out["ablation_name"] = name
-    return out
-
-
-def metric_subset(metrics: dict[str, float]) -> dict[str, float]:
-    keys = [
-        "total_return",
-        "benchmark_return",
-        "sharpe",
-        "max_drawdown",
-        "active_day_ratio",
-        "daily_win_rate_when_active",
-        "test_trades",
-        "entries",
-        "exits",
-        "turnover",
-        "net_total_return_5bps",
-        "net_sharpe_5bps",
-        "net_max_drawdown_5bps",
-    ]
-    return {key: metrics[key] for key in keys if key in metrics}
-
-
 def build_yearly_backtest_report(
     backtest_frame: pd.DataFrame,
     *,
@@ -3425,277 +2125,6 @@ def moving_block_bootstrap_summary(
     }
 
 
-def run_parameter_stability_report(
-    frame: pd.DataFrame,
-    config: RiskConfig,
-    validation_mask: pd.Series,
-    test_mask: pd.Series,
-) -> list[dict[str, Any]]:
-    """Audit one-factor neighbors without using test results to change the formal configuration."""
-    variants = [
-        ("fallback_reference", config),
-        ("profit_8", replace(config, profit_atr_multiple=8.0)),
-        ("profit_12", replace(config, profit_atr_multiple=12.0)),
-        ("profit_disabled", replace(config, atr_profit_enabled=False)),
-        ("stop_5", replace(config, stop_atr_multiple=5.0)),
-        ("stop_7", replace(config, stop_atr_multiple=7.0)),
-        ("hmm_confirm_15", replace(config, hmm_exit_confirmation_days=15)),
-        ("hmm_confirm_30", replace(config, hmm_exit_confirmation_days=30)),
-        ("event_gap_3", replace(config, meta_event_gap_days=3)),
-        ("event_gap_8", replace(config, meta_event_gap_days=8)),
-        ("cusum_positive", replace(config, meta_event_kind="cusum_positive")),
-        ("normal_risk_9", replace(config, normal_trend_risk_budget=0.09)),
-        ("normal_risk_11", replace(config, normal_trend_risk_budget=0.11)),
-        ("strong_risk_12", replace(config, strong_trend_risk_budget=0.12)),
-        ("strong_risk_15", replace(config, strong_trend_risk_budget=0.15, max_single_loss=0.15)),
-        ("strong_threshold_10", replace(config, strong_trend_ret_120_threshold=0.10)),
-        ("strong_threshold_15", replace(config, strong_trend_ret_120_threshold=0.15)),
-    ]
-    rows: list[dict[str, Any]] = []
-    empty_probabilities = pd.Series(np.nan, index=frame.index)
-    for name, variant in variants:
-        row: dict[str, Any] = {"name": name}
-        for segment, mask in [("validation", validation_mask), ("test", test_mask)]:
-            mask_series = pd.Series(mask, index=frame.index).astype(bool)
-            signals = generate_signals(
-                frame,
-                empty_probabilities,
-                variant,
-                use_xgboost=False,
-                use_atr=True,
-                start_at=frame.index[mask_series].min(),
-            )
-            _, metrics = backtest_next_open(
-                signals,
-                mask,
-                variant,
-                cost_bps=5.0,
-                write_log=False,
-            )
-            row.update(
-                {
-                    f"{segment}_return_5bps": metrics["total_return"],
-                    f"{segment}_sharpe_5bps": metrics["sharpe"],
-                    f"{segment}_max_drawdown_5bps": metrics["max_drawdown"],
-                    f"{segment}_trades": metrics["test_trades"],
-                }
-            )
-        rows.append(row)
-    pd.DataFrame(rows).to_csv(LOCAL_LOGS / "gold_parameter_stability.csv", index=False, encoding="utf-8-sig")
-    return rows
-
-
-def run_entry_mode_comparison_report(
-    frame: pd.DataFrame,
-    config: RiskConfig,
-    validation_mask: pd.Series,
-    test_mask: pd.Series,
-) -> list[dict[str, Any]]:
-    """Compare predeclared trend and low-price entry environments under the formal engine."""
-    modes = [
-        "trend_slow",
-        "tsmom_ensemble",
-        "below_sma_60",
-        "below_sma_120",
-        "dip_recovery_60",
-        "dip_recovery_120",
-        "trend_or_dip_60",
-        "trend_or_dip_120",
-        "new_low_240",
-        "dip_recovery_240",
-        "trend_or_dip_240",
-    ]
-    empty_probabilities = pd.Series(np.nan, index=frame.index)
-    rows: list[dict[str, Any]] = []
-    for mode in modes:
-        variant = replace(config, primary_signal_mode=mode)
-        row: dict[str, Any] = {"mode": mode, "selected": mode == config.primary_signal_mode}
-        for segment, mask in [("validation", validation_mask), ("test", test_mask)]:
-            mask_series = pd.Series(mask, index=frame.index).astype(bool)
-            signals = generate_signals(
-                frame,
-                empty_probabilities,
-                variant,
-                use_xgboost=False,
-                use_atr=True,
-                start_at=frame.index[mask_series].min(),
-            )
-            _, metrics = backtest_next_open(
-                signals,
-                mask,
-                variant,
-                cost_bps=5.0,
-                write_log=False,
-            )
-            row.update(
-                {
-                    f"{segment}_return_5bps": metrics["total_return"],
-                    f"{segment}_sharpe_5bps": metrics["sharpe"],
-                    f"{segment}_max_drawdown_5bps": metrics["max_drawdown"],
-                    f"{segment}_trades": metrics["test_trades"],
-                    f"{segment}_active_day_ratio": metrics["active_day_ratio"],
-                }
-            )
-        rows.append(row)
-    pd.DataFrame(rows).to_csv(LOCAL_LOGS / "gold_entry_mode_comparison.csv", index=False, encoding="utf-8-sig")
-    return rows
-
-
-def run_ablation_experiments(
-    frame: pd.DataFrame,
-    config: RiskConfig,
-    test_mask: pd.Series,
-    formal_signals: pd.DataFrame | None = None,
-) -> list[dict[str, Any]]:
-    probabilities = pd.Series(np.nan, index=frame.index)
-    trend_signal = primary_long_signal(frame, "trend_slow")
-    test_mask_series = pd.Series(test_mask, index=frame.index).astype(bool)
-    test_start = frame.index[test_mask_series].min()
-    no_drawdown_config = replace(
-        config,
-        max_drawdown_soft=1.0,
-        max_drawdown_hard=1.0,
-    )
-    buy_and_hold = make_position_signal_frame(
-        frame,
-        pd.Series(1.0, index=frame.index),
-        "A_buy_and_hold_gold",
-        test_start,
-    )
-    trend_target = make_position_signal_frame(
-        frame,
-        trend_signal.astype(float),
-        "B_technical_trend_target",
-        test_start,
-    )
-    trend_cusum = generate_signals(
-        frame,
-        probabilities,
-        no_drawdown_config,
-        use_xgboost=False,
-        use_atr=False,
-        primary_mode="trend_slow",
-        start_at=test_start,
-        use_hmm_exit=False,
-        use_trend_exit=True,
-    )
-    trend_cusum["target_position_override"] = 1.0
-    trend_cusum_hmm = generate_signals(
-        frame,
-        probabilities,
-        no_drawdown_config,
-        use_xgboost=False,
-        use_atr=False,
-        start_at=test_start,
-        use_hmm_exit=True,
-        use_trend_exit=False,
-    )
-    trend_cusum_hmm["target_position_override"] = 1.0
-    fixed_risk_config = replace(
-        no_drawdown_config,
-        dynamic_trend_risk_enabled=False,
-        max_single_loss=0.12,
-    )
-    fixed_risk_signals = generate_signals(
-        frame,
-        probabilities,
-        fixed_risk_config,
-        use_xgboost=False,
-        use_atr=True,
-        start_at=test_start,
-    )
-    variants = [
-        (
-            "A_buy_and_hold_gold",
-            "买入并持有黄金（严格次日开盘）",
-            buy_and_hold,
-            no_drawdown_config,
-        ),
-        (
-            "B_technical_trend_target",
-            "纯技术趋势目标仓位",
-            trend_target,
-            no_drawdown_config,
-        ),
-        (
-            "C_trend_cusum",
-            "趋势 + CUSUM（满仓、趋势退出）",
-            trend_cusum,
-            no_drawdown_config,
-        ),
-        (
-            "D_trend_cusum_hmm",
-            "趋势 + CUSUM（HMM替代趋势退出、满仓）",
-            trend_cusum_hmm,
-            no_drawdown_config,
-        ),
-        (
-            "E_trend_cusum_hmm_atr_fixed",
-            "趋势 + CUSUM + HMM + ATR（固定12%风险）",
-            fixed_risk_signals,
-            fixed_risk_config,
-        ),
-    ]
-    if formal_signals is not None:
-        variants.append(
-            (
-                "F_formal_strategy",
-                "正式动态风险策略（统一执行）",
-                formal_signals,
-                config,
-            )
-        )
-    rows: list[dict[str, Any]] = []
-    for name, label, signals, variant_config in variants:
-        _, metrics = backtest_next_open(
-            signals,
-            test_mask,
-            variant_config,
-            cost_bps=5.0,
-            write_log=False,
-        )
-        rows.append({"name": name, "label": label, **metric_subset(metrics)})
-    pd.DataFrame(rows).to_csv(LOCAL_LOGS / "gold_ablation.csv", index=False, encoding="utf-8-sig")
-    return rows
-
-
-def xgboost_feature_groups(importances: pd.DataFrame) -> list[dict[str, Any]]:
-    feature_names = importances["feature"].astype(str).tolist()
-    definitions = [
-        (
-            "波动与交易风险",
-            ("vol_", "ret_vol_adj_", "atr_", "bb_", "adx_", "ret_skew_"),
-            "描述波动扩张、趋势强度、收益偏度和止损距离所处的历史区间。",
-        ),
-        (
-            "跨市场与资金流",
-            ("dxy_", "vix_", "spx_", "gold_dxy_", "gld_"),
-            "刻画美元、风险偏好、股票市场和 GLD 量价资金流对黄金趋势质量的影响。",
-        ),
-        (
-            "趋势与动量",
-            ("ret_", "momentum_", "sma_gap_", "ma_cross_", "trend_age_", "drawdown_"),
-            "描述黄金中长期方向、趋势成熟度与距阶段高点的位置。",
-        ),
-    ]
-    groups: list[dict[str, Any]] = []
-    assigned: set[str] = set()
-    for name, prefixes, rationale in definitions:
-        features = [feature for feature in feature_names if feature not in assigned and feature.startswith(prefixes)]
-        assigned.update(features)
-        groups.append({"name": name, "rationale": rationale, "features": features})
-    remaining = [feature for feature in feature_names if feature not in assigned]
-    if remaining:
-        groups.append(
-            {
-                "name": "其他状态变量",
-                "rationale": "保留少量不能归入上述经济类别但通过预设特征策略的状态变量。",
-                "features": remaining,
-            }
-        )
-    return groups
-
-
 def overlay_execution_state(
     signal_frame: pd.DataFrame,
     execution_frame: pd.DataFrame,
@@ -3746,16 +2175,24 @@ def overlay_execution_state(
 
 
 def formal_strategy_fingerprint(config: RiskConfig) -> str:
-    config_payload = {
-        key: value
-        for key, value in asdict(config).items()
-        if not key.startswith("xgboost_")
-        and key not in {"up_threshold", "down_threshold", "prediction_horizon_days"}
-    }
+    formal_functions = [
+        risk_position_size,
+        trend_risk_budget,
+        build_features,
+        fit_hmm,
+        fit_hmm_walk_forward,
+        primary_long_signal,
+        make_cusum_events,
+        make_meta_events,
+        generate_signals,
+        backtest_next_open,
+    ]
+    formal_source = "\n\n".join(inspect.getsource(function) for function in formal_functions)
     payload = {
         "strategyVersion": FORMAL_STRATEGY_VERSION,
         "executionEngineVersion": EXECUTION_ENGINE_VERSION,
-        "config": config_payload,
+        "config": asdict(config),
+        "formalLogicSha256": hashlib.sha256(formal_source.encode("utf-8")).hexdigest(),
     }
     encoded = json.dumps(json_safe(payload), ensure_ascii=False, sort_keys=True).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -3798,18 +2235,19 @@ def update_forward_ledger(
     }
     if FORWARD_LEDGER.exists():
         existing = json.loads(FORWARD_LEDGER.read_text(encoding="utf-8"))
-        for key in [
-            "strategyVersion",
-            "executionEngineVersion",
-            "configFingerprint",
-            "start",
-        ]:
+        for key in ["strategyVersion", "executionEngineVersion", "start"]:
             if existing.get(key) != ledger[key]:
                 raise RuntimeError(
                     f"Forward ledger {key} changed; create a new declared strategy version instead of rewriting history"
                 )
         if existing.get("appendOnly") is not True or not isinstance(existing.get("records"), list):
             raise RuntimeError("Forward ledger schema is invalid")
+        if existing.get("configFingerprint") != fingerprint:
+            if existing["records"]:
+                raise RuntimeError(
+                    "Forward ledger configFingerprint changed; create a new declared strategy version instead of rewriting history"
+                )
+            existing["configFingerprint"] = fingerprint
         ledger = existing
 
     existing_by_date = {record["date"]: record for record in ledger["records"]}
@@ -3836,10 +2274,7 @@ def update_forward_ledger(
         raise RuntimeError(f"Forward ledger has non-append gaps: {missing_historical[:3]}")
     new_records = [record for record in candidate_records if record["date"] > last_existing_date]
     ledger["records"].extend(new_records)
-    FORWARD_LEDGER.write_text(
-        json.dumps(json_safe(ledger), ensure_ascii=False, indent=2, allow_nan=False),
-        encoding="utf-8",
-    )
+    write_json_atomic(FORWARD_LEDGER, ledger, indent=2)
 
     records = ledger["records"]
     strategy_returns = pd.Series([record["strategyReturn"] for record in records], dtype=float)
@@ -3869,7 +2304,6 @@ def build_outputs(
     forward_holdout_metrics: dict[str, Any],
     yearly_backtest_metrics: list[dict[str, Any]],
     backtest_robustness: dict[str, Any],
-    entry_mode_comparison: list[dict[str, Any]],
     sources: dict[str, str],
     state_mapping: dict[int, str],
     data_quality: dict[str, Any],
@@ -3893,7 +2327,6 @@ def build_outputs(
         "exit_reason",
         "atr_pct",
         "payoff_ratio",
-        "historical_train_win_rate",
         "trend_risk_budget",
         "cash_yield_pct",
         "dxy_close",
@@ -3918,12 +2351,7 @@ def build_outputs(
 
     latest = signal_frame.dropna(subset=["gold_close"]).iloc[-1]
     previous = signal_frame.dropna(subset=["gold_close"]).iloc[-2]
-    public_risk = {
-        key: value
-        for key, value in asdict(config).items()
-        if not key.startswith("xgboost_")
-        and key not in {"up_threshold", "down_threshold", "prediction_horizon_days"}
-    }
+    public_risk = asdict(config)
 
     latest_json = {
         "asOf": str(latest.name.date()),
@@ -3951,7 +2379,6 @@ def build_outputs(
         "forwardHoldoutMetrics": forward_holdout_metrics,
         "backtestYearly": yearly_backtest_metrics,
         "backtestRobustness": backtest_robustness,
-        "entryModeComparison": entry_mode_comparison,
         "stateMapping": {str(k): v for k, v in state_mapping.items()},
         "sources": sources,
         "dataQuality": data_quality,
@@ -3965,10 +2392,9 @@ def build_outputs(
             "MOVE、Fed funds futures implied rate、GLD 官方持仓和黄金 ETF 官方净流入当前没有稳定免费 point-in-time 接口，已在 sources/dataQuality 标为不可用或 proxy。",
             "GPR 使用 Caldara-Iacoviello 月度地缘政治风险指数，并做月末后 7 天滞后近似。",
             "FOMC 事件来自美联储会议日历，作为事件日和 proximity 特征。",
-            "正式算法不再训练或读取机器学习分类概率；交易决策完全来自可解释的趋势、CUSUM、ATR 和 walk-forward HMM 规则。",
+            "正式算法只运行已采纳的趋势、CUSUM、ATR 和 walk-forward HMM 规则，不包含候选策略或分类预测路径。",
             "网站持仓、止损、止盈和待执行动作统一来自正式次日开盘执行账本，不再使用独立的收盘成交状态机。",
             f"HMM 固定使用初始训练期可用的 {config.hmm_feature_policy} 特征集合，后续重训不允许因数据源变长而改变模型维度。",
-            "低于 60/120 日均线、240 日新低、带反转确认以及趋势与低点并集模式均已用冻结验证和严格执行引擎比较，正式策略保留 120 日趋势入场。",
             f"训练和验证截止日已经冻结；{config.forward_holdout_start_date} 之后的新数据作为 forward holdout，不回流到历史参数选择。",
             f"HMM 使用 expanding walk-forward，并约每 {config.hmm_retrain_every_days} 个交易日重训一次，所有状态概率只使用当时可得数据。",
             f"入场仓位按 ATR 止损距离缩放：普通趋势风险预算 {config.normal_trend_risk_budget:.0%}，120 日收益达到 {config.strong_trend_ret_120_threshold:.0%} 的强趋势预算 {config.strong_trend_risk_budget:.0%}；隔夜跳空可能使实际损失超过计划值。",
@@ -3980,10 +2406,7 @@ def build_outputs(
             "研究结果不构成投资建议。",
         ],
     }
-    (PUBLIC_DATA / "gold_research_latest.json").write_text(
-        json.dumps(json_safe(latest_json), ensure_ascii=False, indent=2, allow_nan=False),
-        encoding="utf-8",
-    )
+    write_json_atomic(PUBLIC_DATA / "gold_research_latest.json", latest_json, indent=2)
 
     price_columns = [
         "gold_close",
@@ -4022,16 +2445,16 @@ def build_outputs(
         }
     )
     price["date"] = price["date"].dt.strftime("%Y-%m-%d")
-    (PUBLIC_DATA / "gold_price_series.json").write_text(
-        json.dumps(price.replace({np.nan: None}).to_dict("records"), ensure_ascii=False),
-        encoding="utf-8",
+    write_json_atomic(
+        PUBLIC_DATA / "gold_price_series.json",
+        price.replace({np.nan: None}).to_dict("records"),
     )
 
     bt = backtest_frame[["equity", "benchmark_equity", "drawdown", "position"]].reset_index()
     bt["date"] = bt["date"].dt.strftime("%Y-%m-%d")
-    (PUBLIC_DATA / "gold_backtest.json").write_text(
-        json.dumps(bt.replace({np.nan: None}).to_dict("records"), ensure_ascii=False),
-        encoding="utf-8",
+    write_json_atomic(
+        PUBLIC_DATA / "gold_backtest.json",
+        bt.replace({np.nan: None}).to_dict("records"),
     )
 
 
@@ -4049,8 +2472,6 @@ def run_pipeline() -> dict[str, Any]:
     validation_end = pd.Timestamp(config.validation_end_date)
     if train_end not in usable.index or validation_end not in usable.index:
         raise RuntimeError("Configured frozen train/validation split dates are not present in the gold dataset")
-    train_mask = features.index <= train_end
-    validation_mask = (features.index > train_end) & (features.index <= validation_end)
     test_mask = features.index > validation_end
 
     _, state_mapping, state_frame = fit_hmm_walk_forward(
@@ -4066,27 +2487,14 @@ def run_pipeline() -> dict[str, Any]:
         encoding="utf-8-sig",
     )
     features = features.join(state_frame)
-    state_dummies = pd.get_dummies(features["market_state_code"], prefix="state", dtype=float)
-    features = features.join(state_dummies)
 
-    probabilities = pd.Series(np.nan, index=features.index)
-    signals = generate_signals(
-        features,
-        probabilities,
-        config,
-        use_xgboost=False,
-        use_atr=True,
-    )
+    signals = generate_signals(features, config)
     test_start = features.index[test_mask].min()
     evaluation_signals = generate_signals(
         features,
-        probabilities,
         config,
-        use_xgboost=False,
-        use_atr=True,
         start_at=test_start,
     )
-    _, close_research_metrics = backtest(evaluation_signals, test_mask)
     backtest_frame, backtest_metrics = backtest_next_open(
         evaluation_signals,
         test_mask,
@@ -4167,23 +2575,12 @@ def run_pipeline() -> dict[str, Any]:
             "cash_yield_return_uplift_5bps": (
                 net_5bps_metrics["total_return"] - net_5bps_zero_cash_metrics["total_return"]
             ),
-            "close_research_total_return": close_research_metrics["total_return"],
-            "close_research_sharpe": close_research_metrics["sharpe"],
         }
     )
-    ablation_metrics = run_ablation_experiments(
-        features,
-        config,
-        test_mask,
-        formal_signals=evaluation_signals,
-    )
-    pd.DataFrame(ablation_metrics).to_csv(LOCAL_LOGS / "gold_ablation.csv", index=False, encoding="utf-8-sig")
     yearly_backtest_metrics = build_yearly_backtest_report(
         live_execution_frame,
         cost_bps=config.realistic_cost_bps,
     )
-    parameter_stability = run_parameter_stability_report(features, config, validation_mask, test_mask)
-    entry_mode_comparison = run_entry_mode_comparison_report(features, config, validation_mask, test_mask)
 
     build_outputs(
         public_signals,
@@ -4193,7 +2590,6 @@ def run_pipeline() -> dict[str, Any]:
         forward_holdout_metrics,
         yearly_backtest_metrics,
         backtest_robustness,
-        entry_mode_comparison,
         sources,
         state_mapping,
         data_quality,
@@ -4213,17 +2609,11 @@ def run_pipeline() -> dict[str, Any]:
         "forward_holdout_metrics": forward_holdout_metrics,
         "backtest_yearly": yearly_backtest_metrics,
         "backtest_robustness": backtest_robustness,
-        "parameter_stability": parameter_stability,
-        "entry_mode_comparison": entry_mode_comparison,
-        "ablation": ablation_metrics,
         "outputs": {
             "signals_csv": str(LOCAL_LOGS / "gold_signals.csv"),
-            "ablation_csv": str(LOCAL_LOGS / "gold_ablation.csv"),
             "live_execution_csv": str(LOCAL_LOGS / "gold_live_execution.csv"),
             "backtest_yearly_csv": str(LOCAL_LOGS / "gold_backtest_yearly.csv"),
             "backtest_robustness_json": str(LOCAL_LOGS / "gold_backtest_robustness.json"),
-            "parameter_stability_csv": str(LOCAL_LOGS / "gold_parameter_stability.csv"),
-            "entry_mode_comparison_csv": str(LOCAL_LOGS / "gold_entry_mode_comparison.csv"),
             "hmm_stability_csv": str(LOCAL_LOGS / "gold_hmm_stability.csv"),
             "latest_json": str(PUBLIC_DATA / "gold_research_latest.json"),
             "price_json": str(PUBLIC_DATA / "gold_price_series.json"),

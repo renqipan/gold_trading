@@ -475,6 +475,11 @@ h2 {
   stroke-dasharray: 6 8;
 }
 
+.ma120Line {
+  stroke: #C084FC;
+  stroke-dasharray: 2 7;
+}
+
 .gridLine {
   stroke: rgba(255, 255, 255, 0.06);
   stroke-width: 1;
@@ -534,6 +539,10 @@ h2 {
 
 .legendMa60 {
   background: rgba(255, 255, 255, 0.34);
+}
+
+.legendMa120 {
+  background: #C084FC;
 }
 
 .legendBench {
