@@ -4,5 +4,19 @@
   "configFingerprint": "342b2b3609350d28cc086c555fc4638dfbe5327dddc9e1df350a4118c475ee29",
   "start": "2026-07-13",
   "appendOnly": true,
-  "records": []
+  "records": [
+    {
+      "date": "2026-07-13",
+      "strategyReturn": 0.0002692765024225885,
+      "benchmarkReturn": -0.025577027927545903,
+      "position": 0.0,
+      "recommendedPosition": 0.0,
+      "turnover": 0.0,
+      "cashInterest": 0.0007909258082674412,
+      "executionAction": "持有/观望",
+      "guide": "卖出/空仓",
+      "pendingEntry": false,
+      "pendingExit": false
+    }
+  ]
 }
