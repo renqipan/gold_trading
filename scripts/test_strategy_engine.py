@@ -539,6 +539,14 @@ def test_alternative_quote_refreshes_only_provisional_tail() -> None:
             refresh_provisional_tail=True,
         )
         assert finalized.loc[pd.Timestamp("2026-07-13"), "gold_close"] == 4070.0
+
+        cross_day_refresh = pipeline.append_new_market_rows(
+            cached,
+            fresh,
+            refresh_provisional_tail=True,
+            published_provisional_tail=pd.Timestamp("2026-07-13"),
+        )
+        assert cross_day_refresh.loc[pd.Timestamp("2026-07-13"), "gold_close"] == 4128.4
     finally:
         pipeline.build_price_status = original_status_builder
 

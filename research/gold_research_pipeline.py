@@ -27,6 +27,7 @@ PUBLIC_DATA = ROOT / "public" / "data"
 LOCAL_LOGS = ROOT / "local_logs"
 RAW_DATA = ROOT / "data" / "raw"
 FORWARD_LEDGER = PUBLIC_DATA / "gold_forward_ledger.json"
+PUBLISHED_LATEST = PUBLIC_DATA / "gold_research_latest.json"
 OFFLINE_MODE = False
 
 FORMAL_STRATEGY_VERSION = "2026-07-13-v1"
@@ -261,6 +262,7 @@ def append_new_market_rows(
     fresh: pd.DataFrame,
     *,
     refresh_provisional_tail: bool = False,
+    published_provisional_tail: pd.Timestamp | None = None,
 ) -> pd.DataFrame:
     """Append new dates and optionally refresh only the still-provisional tail date."""
     if cached.empty or fresh.empty:
@@ -270,7 +272,13 @@ def append_new_market_rows(
     if (
         refresh_provisional_tail
         and tail_date in fresh.index
-        and build_price_status(tail_date)["isFinal"] is False
+        and (
+            build_price_status(tail_date)["isFinal"] is False
+            or (
+                published_provisional_tail is not None
+                and tail_date.normalize() == published_provisional_tail.normalize()
+            )
+        )
     ):
         common_columns = cached.columns.intersection(fresh.columns)
         merged.loc[tail_date, common_columns] = fresh.loc[tail_date, common_columns]
@@ -281,6 +289,19 @@ def append_new_market_rows(
     return pd.concat(
         [merged.reindex(columns=all_columns), new_rows.reindex(columns=all_columns)]
     ).sort_index()
+
+
+def published_provisional_tail_date() -> pd.Timestamp | None:
+    """Return the previously published mutable tail even after its session crosses settlement."""
+    if not PUBLISHED_LATEST.exists():
+        return None
+    try:
+        latest = json.loads(PUBLISHED_LATEST.read_text(encoding="utf-8"))
+        if latest.get("priceStatus", {}).get("isFinal") is False:
+            return pd.Timestamp(latest["asOf"])
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return None
 
 
 def fetch_gold_market_history() -> tuple[pd.DataFrame, str]:
@@ -319,6 +340,7 @@ def load_market_data() -> tuple[pd.DataFrame, dict[str, str]]:
 
     gold = cached_gold
     gold_refreshed = False
+    mutable_published_tail = published_provisional_tail_date()
     if not OFFLINE_MODE:
         try:
             fresh_gold, live_source = fetch_gold_market_history()
@@ -326,6 +348,7 @@ def load_market_data() -> tuple[pd.DataFrame, dict[str, str]]:
                 cached_gold,
                 fresh_gold,
                 refresh_provisional_tail=True,
+                published_provisional_tail=mutable_published_tail,
             )
             gold_refreshed = bool(len(fresh_gold))
         except Exception as exc:

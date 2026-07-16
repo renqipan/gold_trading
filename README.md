@@ -167,6 +167,17 @@ npm run update:daily
 
 脚本依赖本机已经配置好的 GitHub SSH 凭据，不会保存 PAT、私钥或部署令牌。GitHub 推送成功后，托管平台仍需按其自身状态确认部署完成。
 
+## GitHub Actions 自动更新
+
+`.github/workflows/daily-update.yml` 会在北京时间每天 `00:17`、`06:17`、`12:17`、`18:17`
+运行，也可以在 GitHub Actions 页面手动触发。GitHub cron 使用 UTC，因此工作流内对应
+`17 4,10,16,22 * * *`。
+
+云端任务会创建隔离的 Node.js/Python 环境，从 `research/seeds/` 恢复确定性的黄金与现金利率
+历史种子，然后调用同一个 `scripts/update_website_daily.sh`。工作流拥有最小的
+`contents: write` 权限，并使用并发锁避免两个更新任务同时推送 `main`。正常情况下仍只会自动
+提交四个 `public/data/*.json`；若行情和模型语义均无变化，则不会创建空提交。
+
 ## 数据安全
 
 - 所有 HTTPS 请求验证 TLS 证书。
@@ -197,8 +208,8 @@ PLAN.md                           策略与发布计划
 
 - 连续价格 proxy 不等同于真实逐合约 GC/MGC 账本。
 - 尚未计入真实换月价差、合约乘数、整数张数和经纪商保证金。
-- 原始缓存未提交，新机器不能仅凭 Git 仓库逐字节复现供应商历史。
+- 完整运行缓存不提交；GitHub Actions 使用仓库内压缩的确定性生产种子启动，再联网追加新数据。
 - Python 依赖尚未使用带哈希锁文件。
-- 仓库内目前没有 GitHub Actions 或 Vercel 部署结果轮询。
+- GitHub Actions 负责定时更新数据，但尚未轮询 Vercel 等托管平台的最终部署结果。
 
 本项目仅用于量化研究和历史复盘，不构成投资建议。
