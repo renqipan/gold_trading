@@ -7,7 +7,7 @@
     "kind": "intraday_snapshot",
     "isFinal": false,
     "sessionDate": "2026-07-17",
-    "observedAt": "2026-07-17T11:05:15.391517+00:00",
+    "observedAt": "2026-07-17T11:14:32.289419+00:00",
     "timezone": "Asia/Shanghai",
     "settlementRule": "COMEX session is treated as final after 08:00 Asia/Shanghai on the next calendar day"
   },
@@ -239,10 +239,10 @@
   },
   "sources": {
     "gold": "COMEX gold continuous history: Eastmoney 101.QO00Y cache extended/refreshed with AkShare/Sina COMEX gold continuous GC extension",
-    "cash_yield": "FRED DGS3MO 3-month Treasury yield"
+    "cash_yield": "FRED DGS3MO 3-month Treasury yield; cached and refreshed only when older than 7 days"
   },
   "dataQuality": {
-    "generatedAt": "2026-07-17T11:05:12Z",
+    "generatedAt": "2026-07-17T11:14:30Z",
     "referenceDate": "2026-07-17",
     "passed": true,
     "assetIdentity": {
@@ -263,7 +263,7 @@
       },
       "cash_yield": {
         "available": true,
-        "source": "FRED DGS3MO 3-month Treasury yield",
+        "source": "FRED DGS3MO 3-month Treasury yield; cached and refreshed only when older than 7 days",
         "rows": 3284,
         "start": "2013-06-25",
         "end": "2026-07-17",
