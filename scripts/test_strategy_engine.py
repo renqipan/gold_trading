@@ -427,12 +427,21 @@ def test_forward_ledger_is_append_only() -> None:
 
             changed = execution.copy()
             changed.loc[index[0], "strategy_ret"] = 0.02
+            changed.loc[index[0], "cash_interest"] = 0.001
+            revised = update_forward_ledger(changed, RiskConfig(), final_status)
+            assert revised["days"] == 2
+            frozen = pipeline.json.loads(pipeline.FORWARD_LEDGER.read_text(encoding="utf-8"))
+            assert frozen["records"][0]["strategyReturn"] == 0.01
+            assert frozen["records"][0]["cashInterest"] == 0.0
+
+            changed_signal = execution.copy()
+            changed_signal.loc[index[0], "guide"] = "卖出/空仓"
             try:
-                update_forward_ledger(changed, RiskConfig(), final_status)
+                update_forward_ledger(changed_signal, RiskConfig(), final_status)
             except RuntimeError as exc:
                 assert "history changed" in str(exc)
             else:
-                raise AssertionError("forward ledger silently rewrote an existing record")
+                raise AssertionError("forward ledger accepted a changed historical signal")
     finally:
         pipeline.FORWARD_LEDGER = original_path
 

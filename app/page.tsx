@@ -27,17 +27,22 @@ type BacktestPoint = {
 const prices = priceSeries as Point[];
 const backtest = backtestSeries as BacktestPoint[];
 const isIntradaySnapshot = latest.priceStatus.isFinal === false;
-const observedAt = new Intl.DateTimeFormat("zh-CN", {
-  timeZone: latest.priceStatus.timezone,
-  month: "2-digit",
-  day: "2-digit",
-  hour: "2-digit",
-  minute: "2-digit",
-  hour12: false,
-}).format(new Date(latest.priceStatus.observedAt));
+const observedAtParts = Object.fromEntries(
+  new Intl.DateTimeFormat("en-CA", {
+    timeZone: latest.priceStatus.timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(new Date(latest.priceStatus.observedAt)).map(({ type, value }) => [type, value]),
+);
+const observedAt = `${observedAtParts.year}-${observedAtParts.month}-${observedAtParts.day} ${observedAtParts.hour}:${observedAtParts.minute}`;
+const priceSessionLabel = `行情交易日 ${latest.asOf}`;
 const priceTimestampLabel = isIntradaySnapshot
-  ? `盘中快照 · 模型更新于 ${observedAt}`
-  : `已收盘 · 模型更新于 ${observedAt}`;
+  ? `盘中快照 · 模型生成于 ${observedAt}（北京时间）`
+  : `已收盘 · 模型生成于 ${observedAt}（北京时间）`;
 
 function pct(value: number, digits = 1) {
   return `${(value * 100).toFixed(digits)}%`;
@@ -214,7 +219,7 @@ function PriceChart() {
         <span><i className="legendMa20" />20 日均线</span>
         <span><i className="legendMa60" />60 日均线</span>
         <span><i className="legendMa120" />120 日均线</span>
-        <span>{latest.asOf} · {priceTimestampLabel}</span>
+        <span>{priceSessionLabel} · {priceTimestampLabel}</span>
       </div>
     </section>
   );
@@ -341,7 +346,7 @@ export default function Home() {
             <span>Au</span>
             黄金交易研究站
           </div>
-          <div className="navMeta">趋势 + HMM · {latest.asOf} · {isIntradaySnapshot ? "盘中" : "收盘"}</div>
+          <div className="navMeta">趋势 + HMM · {priceSessionLabel} · {isIntradaySnapshot ? "盘中" : "收盘"}</div>
         </nav>
 
         <div className="heroGrid">

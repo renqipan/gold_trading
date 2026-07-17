@@ -1408,7 +1408,14 @@ def update_forward_ledger(
     config: RiskConfig,
     price_status: dict[str, Any],
 ) -> dict[str, Any]:
-    """Validate immutable forward records and append only completed trading days."""
+    """Validate immutable forward records and append only completed trading days.
+
+    Published accounting values stay frozen. FRED can publish a missing Treasury
+    observation after a record was created, so a fresh runner may recompute cash
+    interest, returns, position ratios, and turnover slightly differently. The
+    strategy fingerprint protects execution logic while the stable decision and
+    gold-return fields below still detect genuine historical drift.
+    """
     ensure_dirs()
     fingerprint = formal_strategy_fingerprint(config)
     forward_start = pd.Timestamp(config.forward_holdout_start_date)
@@ -1461,11 +1468,19 @@ def update_forward_ledger(
 
     existing_by_date = {record["date"]: record for record in ledger["records"]}
     candidate_by_date = {record["date"]: record for record in candidate_records}
+    frozen_accounting_fields = {
+        "strategyReturn",
+        "position",
+        "turnover",
+        "cashInterest",
+    }
     for date, existing_record in existing_by_date.items():
         candidate_record = candidate_by_date.get(date)
         if candidate_record is None:
             raise RuntimeError(f"Forward ledger date {date} disappeared from the recomputed execution history")
         for key, expected in existing_record.items():
+            if key in frozen_accounting_fields:
+                continue
             actual = candidate_record.get(key)
             if isinstance(expected, (int, float)) and not isinstance(expected, bool):
                 if not np.isfinite(float(actual)) or abs(float(actual) - float(expected)) > 1e-10:
