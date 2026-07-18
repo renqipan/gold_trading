@@ -2,10 +2,12 @@ name: Gold website update
 
 on:
   schedule:
-    # An early wake-up absorbs the 1h+ delays commonly seen in GitHub's scheduler.
-    - cron: "17 5,11,17,23 * * *"
     # Target slots in UTC, corresponding to 02:17/08:17/14:17/20:17 Asia/Shanghai.
     - cron: "17 0,6,12,18 * * *"
+    # Post-slot recovery wakes compensate for delayed or dropped GitHub cron events.
+    # They remain cheap because an already-published slot exits before dependency setup.
+    - cron: "47 0,6,12,18 * * *"
+    - cron: "47 1,7,13,19 * * *"
   workflow_dispatch:
 
 permissions:
@@ -42,6 +44,8 @@ jobs:
           now_epoch="$(date -u +%s)"
           interval_seconds=$((6 * 60 * 60))
           minute_offset_seconds=$((17 * 60))
+          # Every scheduled wake now occurs at or after a target. Flooring selects
+          # the due slot for the target wake and the +30m/+90m recovery wakes.
           slot_epoch=$(( (now_epoch - minute_offset_seconds) / interval_seconds * interval_seconds + minute_offset_seconds ))
           slot_iso="$(date -u -d "@${slot_epoch}" +%FT%TZ)"
           observed_epoch=0

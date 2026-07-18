@@ -59,6 +59,22 @@ read_is_final() {
   node -e "const d=require('./public/data/gold_research_latest.json'); process.stdout.write(String(d.priceStatus?.isFinal !== false))"
 }
 
+assert_target_slot_published() {
+  [[ -n "${TARGET_UPDATE_SLOT:-}" ]] || return 0
+  node - "${TARGET_UPDATE_SLOT}" <<'NODE'
+const latest = require("./public/data/gold_research_latest.json");
+const targetSlot = process.argv[2];
+const targetEpoch = Date.parse(targetSlot);
+const observedEpoch = Date.parse(latest.priceStatus?.observedAt || "");
+if (!Number.isFinite(targetEpoch) || !Number.isFinite(observedEpoch)) {
+  throw new Error(`目标时段或网站更新时间无效：target=${targetSlot}, observed=${latest.priceStatus?.observedAt}`);
+}
+if (observedEpoch < targetEpoch) {
+  throw new Error(`网站更新时间早于目标时段：target=${targetSlot}, observed=${latest.priceStatus.observedAt}`);
+}
+NODE
+}
+
 semantic_digest() {
   node <<'NODE'
 const crypto = require("node:crypto");
@@ -240,6 +256,7 @@ readonly OLD_DIGEST="$(semantic_digest)"
 
 run_quiet_step '[2/4] 更新行情与模型' "${PYTHON_BIN}" research/gold_research_pipeline.py
 assert_only_owned_changes
+assert_target_slot_published
 run_quiet_step '[3/4] 验证策略与网站' npm run --silent verify
 assert_only_owned_changes
 
