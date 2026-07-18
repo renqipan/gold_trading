@@ -105,7 +105,7 @@ function oldJson(path) {
 function newJson(path) {
   return JSON.parse(fs.readFileSync(path, "utf8"));
 }
-function validateDated(path) {
+function validateDated(path, revisionFields = []) {
   const before = oldJson(path);
   const after = newJson(path);
   const oldLatest = oldJson("public/data/gold_research_latest.json");
@@ -122,10 +122,14 @@ function validateDated(path) {
       if (oldRow.date >= newMin) throw new Error(`历史中间日期消失：${path} ${oldRow.date}`);
       continue;
     }
-    if (
-      JSON.stringify(afterByDate.get(oldRow.date)) !== JSON.stringify(oldRow)
-      && oldRow.date !== mutableTailDate
-    ) {
+    const newRow = afterByDate.get(oldRow.date);
+    const stableOldRow = Object.fromEntries(
+      Object.entries(oldRow).filter(([key]) => !revisionFields.includes(key)),
+    );
+    const stableNewRow = Object.fromEntries(
+      Object.entries(newRow).filter(([key]) => !revisionFields.includes(key)),
+    );
+    if (JSON.stringify(stableNewRow) !== JSON.stringify(stableOldRow) && oldRow.date !== mutableTailDate) {
       throw new Error(`历史数据被改写：${path} ${oldRow.date}`);
     }
   }
@@ -138,7 +142,9 @@ function validateDated(path) {
 }
 
 validateDated("public/data/gold_price_series.json");
-validateDated("public/data/gold_backtest.json");
+// FRED can publish a missing cash-yield observation after the initial run. It may
+// revise strategy accounting, but never the gold benchmark, dates, or formal ledger.
+validateDated("public/data/gold_backtest.json", ["equity", "drawdown", "position"]);
 
 const ledgerPath = "public/data/gold_forward_ledger.json";
 const beforeLedger = oldJson(ledgerPath);
@@ -230,7 +236,6 @@ fi
 START_HEAD="$(git rev-parse HEAD)"
 readonly BASE_REMOTE_HEAD="$(git rev-parse "${REMOTE}/${BRANCH}")"
 readonly OLD_AS_OF="$(read_as_of)"
-readonly OLD_IS_FINAL="$(read_is_final)"
 readonly OLD_DIGEST="$(semantic_digest)"
 
 run_quiet_step '[2/4] 更新行情与模型' "${PYTHON_BIN}" research/gold_research_pipeline.py
@@ -254,8 +259,6 @@ if [[ "${NEW_AS_OF}" == "${OLD_AS_OF}" ]]; then
       printf '[4/4] 发布网站 ... 无变化，无需提交\n'
       exit 0
     fi
-  else
-    [[ "${OLD_IS_FINAL}" == "false" ]] || die "已确认收盘日期的数据发生变化，已阻止自动发布：${NEW_AS_OF}"
   fi
 fi
 
