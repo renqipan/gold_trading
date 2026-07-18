@@ -2,8 +2,9 @@ name: Gold website update
 
 on:
   schedule:
-    # GitHub cron uses UTC: 00:17/06:17/12:17/18:17 UTC
-    # correspond to 08:17/14:17/20:17/02:17 Asia/Shanghai.
+    # An early wake-up absorbs the 1h+ delays commonly seen in GitHub's scheduler.
+    - cron: "17 5,11,17,23 * * *"
+    # Target slots in UTC, corresponding to 02:17/08:17/14:17/20:17 Asia/Shanghai.
     - cron: "17 0,6,12,18 * * *"
   workflow_dispatch:
 
@@ -27,13 +28,45 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
 
+      - name: Decide whether this target slot still needs an update
+        id: slot
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" != "schedule" ]]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "Manual run: update enabled"
+            exit 0
+          fi
+
+          observed_at="$(jq -r '.priceStatus.observedAt // empty' public/data/gold_research_latest.json)"
+          now_epoch="$(date -u +%s)"
+          interval_seconds=$((6 * 60 * 60))
+          minute_offset_seconds=$((17 * 60))
+          slot_epoch=$(( (now_epoch - minute_offset_seconds) / interval_seconds * interval_seconds + minute_offset_seconds ))
+          slot_iso="$(date -u -d "@${slot_epoch}" +%FT%TZ)"
+          observed_epoch=0
+          if [[ -n "${observed_at}" ]]; then
+            observed_epoch="$(date -u -d "${observed_at}" +%s)"
+          fi
+
+          if (( observed_epoch >= slot_epoch )); then
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            echo "Target slot ${slot_iso} is already published; skipping"
+          else
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "target_slot=${slot_iso}" >> "$GITHUB_OUTPUT"
+            echo "Target slot ${slot_iso} still needs an update"
+          fi
+
       - name: Set up Node.js
+        if: steps.slot.outputs.should_run == 'true'
         uses: actions/setup-node@v7
         with:
           node-version: "20"
           cache: npm
 
       - name: Set up Python
+        if: steps.slot.outputs.should_run == 'true'
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -41,25 +74,32 @@ jobs:
           cache-dependency-path: research/requirements.txt
 
       - name: Install website dependencies
+        if: steps.slot.outputs.should_run == 'true'
         run: npm ci --no-audit --no-fund
 
       - name: Install research dependencies
+        if: steps.slot.outputs.should_run == 'true'
         run: |
           python -m venv .venv-research
           .venv-research/bin/python -m pip install --disable-pip-version-check -r research/requirements.txt
 
       - name: Restore deterministic production seeds
+        if: steps.slot.outputs.should_run == 'true'
         run: |
           mkdir -p data/raw
           gzip -dc research/seeds/gold_eastmoney.csv.gz > data/raw/gold_eastmoney.csv
           gzip -dc research/seeds/dgs3mo_cash_yield.csv.gz > data/raw/dgs3mo_cash_yield.csv
 
       - name: Configure automation commit identity
+        if: steps.slot.outputs.should_run == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       - name: Update data, verify website, and publish main
+        if: steps.slot.outputs.should_run == 'true'
         env:
           TZ: Asia/Shanghai
+          FORCE_PUBLISH_TIMESTAMP: "1"
+          TARGET_UPDATE_SLOT: ${{ steps.slot.outputs.target_slot }}
         run: ./scripts/update_website_daily.sh

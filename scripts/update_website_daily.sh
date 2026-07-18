@@ -249,11 +249,14 @@ NEW_IS_FINAL="$(read_is_final)"
 NEW_DIGEST="$(semantic_digest)"
 if [[ "${NEW_AS_OF}" == "${OLD_AS_OF}" ]]; then
   if [[ "${NEW_DIGEST}" == "${OLD_DIGEST}" ]]; then
-    restore_owned
-    printf '[4/4] 发布网站 ... 无变化，无需提交\n'
-    exit 0
+    if [[ "${FORCE_PUBLISH_TIMESTAMP:-0}" != "1" ]]; then
+      restore_owned
+      printf '[4/4] 发布网站 ... 无变化，无需提交\n'
+      exit 0
+    fi
+  else
+    [[ "${OLD_IS_FINAL}" == "false" ]] || die "已确认收盘日期的数据发生变化，已阻止自动发布：${NEW_AS_OF}"
   fi
-  [[ "${OLD_IS_FINAL}" == "false" ]] || die "已确认收盘日期的数据发生变化，已阻止自动发布：${NEW_AS_OF}"
 fi
 
 validate_history_append_only
@@ -265,7 +268,9 @@ printf '[4/4] 发布网站 ... '
 git fetch --quiet "${REMOTE}" "${BRANCH}"
 [[ "$(git rev-parse "${REMOTE}/${BRANCH}")" == "${BASE_REMOTE_HEAD}" ]] || die "origin/main 在更新期间发生变化；禁止自动 rebase 或 force push"
 
-if [[ "${NEW_IS_FINAL}" == "true" ]]; then
+if [[ "${NEW_DIGEST}" == "${OLD_DIGEST}" ]]; then
+  commit_subject="Refresh gold website at $(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M') Asia/Shanghai"
+elif [[ "${NEW_IS_FINAL}" == "true" ]]; then
   commit_subject="Update gold data through ${NEW_AS_OF} close"
 else
   commit_subject="Update gold intraday snapshot for ${NEW_AS_OF}"
