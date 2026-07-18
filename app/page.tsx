@@ -40,6 +40,7 @@ const observedAtParts = Object.fromEntries(
 );
 const observedAt = `${observedAtParts.year}-${observedAtParts.month}-${observedAtParts.day} ${observedAtParts.hour}:${observedAtParts.minute}`;
 const priceSessionLabel = `行情交易日 ${latest.asOf}`;
+const siteUpdatedLabel = `网站更新于 ${observedAt}（北京时间）`;
 const priceTimestampLabel = isIntradaySnapshot
   ? `盘中快照 · 模型生成于 ${observedAt}（北京时间）`
   : `已收盘 · 模型生成于 ${observedAt}（北京时间）`;
@@ -346,7 +347,7 @@ export default function Home() {
             <span>Au</span>
             黄金交易研究站
           </div>
-          <div className="navMeta">趋势 + HMM · {priceSessionLabel} · {isIntradaySnapshot ? "盘中" : "收盘"}</div>
+          <div className="navMeta">趋势 + HMM · {siteUpdatedLabel}</div>
         </nav>
 
         <div className="heroGrid">
