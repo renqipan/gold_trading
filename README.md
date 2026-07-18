@@ -169,9 +169,10 @@ npm run update:daily
 
 ## GitHub Actions 自动更新
 
-`.github/workflows/daily-update.yml` 会在北京时间每天 `00:17`、`06:17`、`12:17`、`18:17`
+`.github/workflows/daily-update.yml` 会在北京时间每天 `02:17`、`08:17`、`14:17`、`20:17`
 运行，也可以在 GitHub Actions 页面手动触发。GitHub cron 使用 UTC，因此工作流内对应
-`17 4,10,16,22 * * *`。
+`17 0,6,12,18 * * *`。其中 `08:17` 位于 COMEX 日线 `08:00` 收盘确认点之后，可及时把
+上一交易日从“盘中快照”更新为“已收盘”。
 
 云端任务会创建隔离的 Node.js/Python 环境，从 `research/seeds/` 恢复确定性的黄金与现金利率
 历史种子，然后调用同一个 `scripts/update_website_daily.sh`。工作流拥有最小的

@@ -2,9 +2,9 @@ name: Gold website update
 
 on:
   schedule:
-    # GitHub cron uses UTC: 04:17/10:17/16:17/22:17 UTC
-    # correspond to 12:17/18:17/00:17/06:17 Asia/Shanghai.
-    - cron: "17 4,10,16,22 * * *"
+    # GitHub cron uses UTC: 00:17/06:17/12:17/18:17 UTC
+    # correspond to 08:17/14:17/20:17/02:17 Asia/Shanghai.
+    - cron: "17 0,6,12,18 * * *"
   workflow_dispatch:
 
 permissions:
