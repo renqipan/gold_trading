@@ -7,7 +7,7 @@
     "kind": "confirmed_daily_close",
     "isFinal": true,
     "sessionDate": "2026-07-24",
-    "observedAt": "2026-07-26T13:56:07.607570+00:00",
+    "observedAt": "2026-07-26T19:34:24.096770+00:00",
     "timezone": "Asia/Shanghai",
     "settlementRule": "COMEX session is treated as final after 08:00 Asia/Shanghai on the next calendar day"
   },
@@ -242,8 +242,8 @@
     "cash_yield": "FRED DGS3MO 3-month Treasury yield"
   },
   "dataQuality": {
-    "generatedAt": "2026-07-26T13:56:05Z",
-    "referenceDate": "2026-07-26",
+    "generatedAt": "2026-07-26T19:34:22Z",
+    "referenceDate": "2026-07-27",
     "passed": true,
     "assetIdentity": {
       "expected": "COMEX gold continuous proxy in USD per troy ounce",
@@ -273,13 +273,13 @@
     "rawAvailability": {
       "gold_close": {
         "lastObserved": "2026-07-24",
-        "ageDays": 2,
+        "ageDays": 3,
         "maxAgeDays": 7,
         "stale": false
       },
       "cash_yield_pct": {
         "lastObserved": "2026-07-23",
-        "ageDays": 3,
+        "ageDays": 4,
         "maxAgeDays": 10,
         "stale": false
       }
