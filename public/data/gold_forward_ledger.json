@@ -134,6 +134,19 @@
       "guide": "卖出/空仓",
       "pendingEntry": false,
       "pendingExit": false
+    },
+    {
+      "date": "2026-07-27",
+      "strategyReturn": 0.0002796134291023211,
+      "benchmarkReturn": 0.02041822844742547,
+      "position": 0.0,
+      "recommendedPosition": 0.0,
+      "turnover": 0.0,
+      "cashInterest": 0.0008223300607515749,
+      "executionAction": "持有/观望",
+      "guide": "卖出/空仓",
+      "pendingEntry": false,
+      "pendingExit": false
     }
   ]
 }
