@@ -176,6 +176,12 @@ if (hasPosition) {
   assertTrue("held position requires finite entry fill price", Number.isFinite(latest.entryFillPrice));
   assertTrue("held position requires finite entry cost price", Number.isFinite(latest.entryCostPrice));
   assertTrue("entry prices must be positive", latest.entryFillPrice > 0 && latest.entryCostPrice > 0);
+  assertTrue(
+    "held position requires valid entry target position",
+    Number.isFinite(latest.entryTargetPosition)
+      && latest.entryTargetPosition >= 0
+      && latest.entryTargetPosition <= 1,
+  );
   assertClose(
     "entryCostPrice includes buy-side transaction cost",
     latest.entryCostPrice,
@@ -187,6 +193,7 @@ if (hasPosition) {
   assertEqual("flat entryDate", latest.entryDate, null);
   assertEqual("flat entryFillPrice", latest.entryFillPrice, null);
   assertEqual("flat entryCostPrice", latest.entryCostPrice, null);
+  assertEqual("flat entryTargetPosition", latest.entryTargetPosition, null);
 }
 
 if (previousPrice) {

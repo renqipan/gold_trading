@@ -1353,6 +1353,7 @@ def overlay_execution_state(
         "entry_blocked_by_drawdown",
         "entry_price",
         "entry_date",
+        "entry_target_position",
     ]
     for column in public_state_columns:
         if column in out:
@@ -1372,16 +1373,29 @@ def overlay_execution_state(
         if execution_column in execution_frame:
             out.loc[common_index, signal_column] = execution_frame.loc[common_index, execution_column]
     active_entry_date: pd.Timestamp | None = None
+    active_entry_target_position = np.nan
     entry_dates = pd.Series(pd.NaT, index=execution_frame.index, dtype="datetime64[ns]")
+    entry_target_positions = pd.Series(np.nan, index=execution_frame.index, dtype=float)
     for date, row in execution_frame.iterrows():
         if float(row.get("position", 0.0)) > 1e-12:
             if pd.notna(row.get("entry_fill_price", np.nan)):
                 active_entry_date = pd.Timestamp(date)
+                entry_target_fraction = float(row.get("entry_target_fraction", np.nan))
+                entry_drawdown_scale = float(row.get("drawdown_scale", 1.0))
+                if np.isfinite(entry_target_fraction) and np.isfinite(entry_drawdown_scale):
+                    active_entry_target_position = min(
+                        1.0,
+                        max(0.0, entry_target_fraction * entry_drawdown_scale),
+                    )
             if active_entry_date is not None:
                 entry_dates.loc[date] = active_entry_date
+            if np.isfinite(active_entry_target_position):
+                entry_target_positions.loc[date] = active_entry_target_position
         else:
             active_entry_date = None
+            active_entry_target_position = np.nan
     out.loc[common_index, "entry_date"] = entry_dates.loc[common_index]
+    out.loc[common_index, "entry_target_position"] = entry_target_positions.loc[common_index]
     for column in [
         "desired_position",
         "pending_entry",
@@ -1578,6 +1592,7 @@ def build_outputs(
     has_active_position = float(latest["position"]) > 1e-12
     active_entry_price = latest.get("entry_price", np.nan)
     active_entry_date = latest.get("entry_date", None)
+    active_entry_target_position = latest.get("entry_target_position", np.nan)
     if has_active_position and pd.notna(active_entry_price) and float(active_entry_price) > 0:
         entry_fill_price = float(active_entry_price)
         entry_cost_price = entry_fill_price * (1 + config.realistic_cost_bps / 10000)
@@ -1587,6 +1602,11 @@ def build_outputs(
     entry_date = (
         str(pd.Timestamp(active_entry_date).date())
         if has_active_position and pd.notna(active_entry_date)
+        else None
+    )
+    entry_target_position = (
+        min(1.0, max(0.0, float(active_entry_target_position)))
+        if has_active_position and pd.notna(active_entry_target_position)
         else None
     )
 
@@ -1613,6 +1633,7 @@ def build_outputs(
         "entryDate": entry_date,
         "entryFillPrice": entry_fill_price,
         "entryCostPrice": entry_cost_price,
+        "entryTargetPosition": entry_target_position,
         "atrPct": float(latest["atr_pct"]),
         "risk": public_risk,
         "backtestMetrics": backtest_metrics,

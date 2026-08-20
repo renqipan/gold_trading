@@ -347,6 +347,14 @@ export default function Home() {
     && latest.entryDate != null
     && latest.entryFillPrice != null
     && latest.entryCostPrice != null;
+  const nextOpenAdjustment = latest.pendingEntry
+    ? `买入至 ${pct(recommendedPosition, 1)}`
+    : latest.pendingExit
+      ? `卖出至 ${pct(recommendedPosition, 1)}`
+      : pct(0, 1);
+  const entryTargetPosition = hasActiveEntry && latest.entryTargetPosition != null
+    ? latest.entryTargetPosition
+    : 0;
 
   return (
     <main>
@@ -370,14 +378,14 @@ export default function Home() {
             <div className="decisionMeta">
               <span>常态风险 {pct(latest.risk.normal_trend_risk_budget, 0)}</span>
               <span>强趋势风险 {pct(latest.risk.strong_trend_risk_budget, 0)}</span>
-              <span>已成交仓位 {pct(latest.position, 1)}</span>
-              <span>下一开盘目标 {pct(recommendedPosition, 1)}</span>
+              <span>当前仓位 {pct(latest.position, 1)}</span>
+              <span>下一开盘调整 {nextOpenAdjustment}</span>
             </div>
             <div className="decisionGauges">
               <Gauge
                 label="目标仓位"
-                value={recommendedPosition * 100}
-                tone={recommendedPosition > 0 ? "buy" : signalTone}
+                value={entryTargetPosition * 100}
+                tone={entryTargetPosition > 0 ? "buy" : signalTone}
               />
             </div>
           </div>

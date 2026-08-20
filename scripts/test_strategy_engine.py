@@ -89,8 +89,12 @@ def test_partial_position_uses_cash_and_units_without_free_rebalancing() -> None
         cost_bps=0.0,
         write_log=False,
     )
+    public = overlay_execution_state(frame, result)
     assert abs(metrics["total_return"] - 0.105) < 1e-12
     assert abs(result.iloc[-1]["position"] - (0.005 * 121 / 1.105)) < 1e-12
+    assert public.iloc[1]["position"] != public.iloc[2]["position"]
+    assert public.iloc[1]["entry_target_position"] == 0.5
+    assert public.iloc[2]["entry_target_position"] == 0.5
 
 
 def test_primary_signal_uses_only_the_adopted_long_term_trend() -> None:
@@ -214,10 +218,12 @@ def test_active_entry_details_clear_after_position_closes() -> None:
     public = overlay_execution_state(frame, result)
     assert public.iloc[1]["position"] > 0.0
     assert public.iloc[1]["entry_date"] == frame.index[1]
+    assert public.iloc[1]["entry_target_position"] == 1.0
     assert result.iloc[2]["exit_reason"] == "atr_stop_gap"
     assert public.iloc[2]["position"] == 0.0
     assert pd.isna(public.iloc[2]["entry_price"])
     assert pd.isna(public.iloc[2]["entry_date"])
+    assert pd.isna(public.iloc[2]["entry_target_position"])
 
 
 def test_hmm_confirmation_resets_after_exit_and_can_be_disabled() -> None:
