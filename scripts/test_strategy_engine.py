@@ -167,6 +167,31 @@ def test_signal_executes_only_at_next_open_and_last_signal_remains_pending() -> 
     assert last_result.iloc[-1]["guide"] == "买入（下一交易日开盘）"
 
 
+def test_entry_barriers_use_next_open_and_signal_day_atr() -> None:
+    frame = execution_frame(3)
+    frame.loc[frame.index[0], ["tb_event", "tb_accepted_event"]] = True
+    frame.loc[frame.index[0], "atr"] = 2.0
+    frame.loc[frame.index[1]:, ["gold_open", "gold_close", "gold_high", "gold_low"]] = [
+        110.0,
+        110.0,
+        111.0,
+        109.0,
+    ]
+    frame["atr_stop_enabled"] = True
+    frame["atr_profit_enabled"] = True
+    result, _ = backtest_next_open(
+        frame,
+        pd.Series(True, index=frame.index),
+        RiskConfig(),
+        cost_bps=0.0,
+        write_log=False,
+    )
+    assert result.iloc[1]["entry_fill_price"] == 110.0
+    assert result.iloc[1]["atr_stop"] == 98.0
+    assert result.iloc[1]["tb_take_profit"] == 130.0
+    assert result.iloc[1]["position"] > 0.0
+
+
 def test_hmm_confirmation_resets_after_exit_and_can_be_disabled() -> None:
     frame = execution_frame(7)
     frame["market_state"] = "熊市"
@@ -567,6 +592,7 @@ if __name__ == "__main__":
     test_signal_builder_has_no_legacy_close_execution_state()
     test_long_only_unlevered_config_is_enforced()
     test_signal_executes_only_at_next_open_and_last_signal_remains_pending()
+    test_entry_barriers_use_next_open_and_signal_day_atr()
     test_hmm_confirmation_resets_after_exit_and_can_be_disabled()
     test_double_barrier_is_conservatively_stopped_and_gap_uses_open()
     test_invalid_open_fails_instead_of_using_impossible_intraday_fill()

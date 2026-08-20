@@ -88,6 +88,10 @@ function actionClass(action: string) {
   return "watch";
 }
 
+function displayGuide(action: string) {
+  return action.startsWith("买入") ? "买入" : action;
+}
+
 function Gauge({
   label,
   value,
@@ -333,6 +337,7 @@ function MetricCard({
 
 export default function Home() {
   const guide = latest.guide;
+  const guideLabel = displayGuide(guide);
   const latestPoint = prices[prices.length - 1];
   const previousPoint = prices[prices.length - 2];
   const oneDay = latestPoint.close / previousPoint.close - 1;
@@ -353,7 +358,7 @@ export default function Home() {
         <div className="heroGrid">
           <div className={`decision decision-${signalTone}`}>
             <p className="eyebrow">今日操作</p>
-            <h1 className={signalTone}>{guide}</h1>
+            <h1 className={signalTone}>{guideLabel}</h1>
             <p className="decisionCopy">
               当前 HMM 状态为{latest.marketState}。正式信号由 120 日长期趋势与 CUSUM 事件共同触发，
               HMM 只负责确认趋势破坏退出。
@@ -375,7 +380,11 @@ export default function Home() {
 
           <div className="snapshot">
             <MetricCard label={isIntradaySnapshot ? "黄金价格（盘中）" : "黄金收盘价"} value={num(latest.price, 2)} detail={`${priceTimestampLabel} · 日变化 ${pct(oneDay, 2)}`} />
-            <MetricCard label="ATR 止损线" value={latest.atrStop ? num(latest.atrStop, 2) : "无"} detail={`止盈 ${latest.risk.profit_atr_multiple.toFixed(0)} ATR · 止损 ${latest.risk.stop_atr_multiple.toFixed(0)} ATR`} />
+            <MetricCard
+              label="止损点位"
+              value={latest.atrStop != null ? num(latest.atrStop, 2) : "无"}
+              detail={`止盈点位 ${latest.takeProfit != null ? num(latest.takeProfit, 2) : "无"} · 入场 ATR：止损 ${latest.risk.stop_atr_multiple.toFixed(0)} 倍 / 止盈 ${latest.risk.profit_atr_multiple.toFixed(0)} 倍`}
+            />
             <MetricCard label="开发回测 Sharpe" value={num(latest.liveExecutionMetrics.sharpe, 2)} detail={`8bps 净收益 ${pct(latest.liveExecutionMetrics.total_return, 1)}`} />
             <MetricCard label="最大回撤" value={pct(latest.liveExecutionMetrics.max_drawdown, 1)} detail={`发生换手的交易日 ${latest.liveExecutionMetrics.test_trades}`} />
           </div>

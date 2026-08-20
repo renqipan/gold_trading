@@ -16,6 +16,10 @@ function assertEqual(name, actual, expected) {
   }
 }
 
+function assertTrue(name, condition) {
+  if (!condition) throw new Error(`${name} failed`);
+}
+
 function assertStrictlyIncreasingDates(name, rows) {
   let previous = "";
   const seen = new Set();
@@ -132,6 +136,45 @@ assertClose("latest.recommendedPosition", latest.recommendedPosition, lastPrice.
 assertEqual("latest.pendingEntry", latest.pendingEntry, lastPrice.pendingEntry);
 assertEqual("latest.pendingExit", latest.pendingExit, lastPrice.pendingExit);
 assertEqual("latest.riskHalted", latest.riskHalted, lastPrice.riskHalted);
+assertEqual("latest.atrStop", latest.atrStop, lastPrice.atrStop);
+assertEqual("latest.takeProfit", latest.takeProfit, lastPrice.takeProfit);
+
+const hasPosition = latest.position > 1e-12;
+assertTrue("pending entry/exit must be mutually exclusive", !(latest.pendingEntry && latest.pendingExit));
+if (latest.pendingEntry) {
+  assertClose("pending-entry position", latest.position, 0);
+  assertTrue("pending-entry target must be positive", latest.recommendedPosition > 0);
+  assertTrue("pending-entry guide", String(latest.guide).startsWith("买入"));
+  assertEqual("pending-entry rawSignal", latest.rawSignal, "long_pending");
+} else if (latest.pendingExit) {
+  assertTrue("pending-exit position must still be held", hasPosition);
+  assertClose("pending-exit target", latest.recommendedPosition, 0);
+  assertTrue("pending-exit guide", String(latest.guide).startsWith("卖出"));
+  assertEqual("pending-exit rawSignal", latest.rawSignal, "flat_pending");
+} else if (hasPosition) {
+  assertEqual("held-position guide", latest.guide, "持有");
+  assertEqual("held-position rawSignal", latest.rawSignal, "long");
+  assertClose("held-position target", latest.recommendedPosition, latest.position);
+} else if (latest.riskHalted) {
+  assertTrue("risk-halted guide", String(latest.guide).startsWith("回撤冷却"));
+  assertEqual("risk-halted rawSignal", latest.rawSignal, "risk_halted");
+  assertClose("risk-halted target", latest.recommendedPosition, 0);
+} else {
+  const flatGuideToRawSignal = { "卖出/空仓": "flat", "持有/观望": "hold" };
+  assertTrue("flat guide", Object.hasOwn(flatGuideToRawSignal, latest.guide));
+  assertEqual("flat rawSignal", latest.rawSignal, flatGuideToRawSignal[latest.guide]);
+  assertClose("flat target", latest.recommendedPosition, 0);
+}
+
+if (hasPosition) {
+  assertTrue("held position requires finite stop", Number.isFinite(latest.atrStop));
+  assertTrue("held position requires finite take-profit", Number.isFinite(latest.takeProfit));
+  assertTrue("stop must be below current price", latest.atrStop < latest.price);
+  assertTrue("take-profit must be above current price", latest.takeProfit > latest.price);
+} else {
+  assertEqual("flat stop", latest.atrStop, null);
+  assertEqual("flat take-profit", latest.takeProfit, null);
+}
 
 if (previousPrice) {
   assertClose("latest.dailyChange", latest.dailyChange, lastPrice.close / previousPrice.close - 1);
