@@ -25,6 +25,9 @@
   "riskHalted": false,
   "atrStop": 3945.4285714285706,
   "takeProfit": 5639.485714285715,
+  "entryDate": "2026-08-20",
+  "entryFillPrice": 4580.7,
+  "entryCostPrice": 4584.36456,
   "atrPct": 0.022556390977443636,
   "risk": {
     "train_end_date": "2021-02-23",

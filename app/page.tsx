@@ -343,6 +343,10 @@ export default function Home() {
   const oneDay = latestPoint.close / previousPoint.close - 1;
   const signalTone = actionClass(guide);
   const recommendedPosition = latest.recommendedPosition ?? latest.position;
+  const hasActiveEntry = latest.position > 0
+    && latest.entryDate != null
+    && latest.entryFillPrice != null
+    && latest.entryCostPrice != null;
 
   return (
     <main>
@@ -380,10 +384,22 @@ export default function Home() {
 
           <div className="snapshot">
             <MetricCard label={isIntradaySnapshot ? "黄金价格（盘中）" : "黄金收盘价"} value={num(latest.price, 2)} detail={`${priceTimestampLabel} · 日变化 ${pct(oneDay, 2)}`} />
+            {hasActiveEntry && (
+              <MetricCard
+                label="买入成本价"
+                value={num(latest.entryCostPrice, 2)}
+                detail={`买入时间 ${latest.entryDate} · 开盘成交价 ${num(latest.entryFillPrice, 2)} · 已含买入侧 ${latest.risk.realistic_cost_bps.toFixed(0)}bps`}
+              />
+            )}
             <MetricCard
               label="止损点位"
               value={latest.atrStop != null ? num(latest.atrStop, 2) : "无"}
-              detail={`止盈点位 ${latest.takeProfit != null ? num(latest.takeProfit, 2) : "无"} · 入场 ATR：止损 ${latest.risk.stop_atr_multiple.toFixed(0)} 倍 / 止盈 ${latest.risk.profit_atr_multiple.toFixed(0)} 倍`}
+              detail={`入场价下方 ${latest.risk.stop_atr_multiple.toFixed(0)} 倍 ATR`}
+            />
+            <MetricCard
+              label="止盈点位"
+              value={latest.takeProfit != null ? num(latest.takeProfit, 2) : "无"}
+              detail={`入场价上方 ${latest.risk.profit_atr_multiple.toFixed(0)} 倍 ATR`}
             />
             <MetricCard label="开发回测 Sharpe" value={num(latest.liveExecutionMetrics.sharpe, 2)} detail={`8bps 净收益 ${pct(latest.liveExecutionMetrics.total_return, 1)}`} />
             <MetricCard label="最大回撤" value={pct(latest.liveExecutionMetrics.max_drawdown, 1)} detail={`发生换手的交易日 ${latest.liveExecutionMetrics.test_trades}`} />

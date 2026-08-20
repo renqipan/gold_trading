@@ -171,9 +171,22 @@ if (hasPosition) {
   assertTrue("held position requires finite take-profit", Number.isFinite(latest.takeProfit));
   assertTrue("stop must be below current price", latest.atrStop < latest.price);
   assertTrue("take-profit must be above current price", latest.takeProfit > latest.price);
+  assertTrue("held position requires entry date", /^\d{4}-\d{2}-\d{2}$/.test(latest.entryDate));
+  assertTrue("entry date cannot be after asOf", latest.entryDate <= latest.asOf);
+  assertTrue("held position requires finite entry fill price", Number.isFinite(latest.entryFillPrice));
+  assertTrue("held position requires finite entry cost price", Number.isFinite(latest.entryCostPrice));
+  assertTrue("entry prices must be positive", latest.entryFillPrice > 0 && latest.entryCostPrice > 0);
+  assertClose(
+    "entryCostPrice includes buy-side transaction cost",
+    latest.entryCostPrice,
+    latest.entryFillPrice * (1 + latest.risk.realistic_cost_bps / 10000),
+  );
 } else {
   assertEqual("flat stop", latest.atrStop, null);
   assertEqual("flat take-profit", latest.takeProfit, null);
+  assertEqual("flat entryDate", latest.entryDate, null);
+  assertEqual("flat entryFillPrice", latest.entryFillPrice, null);
+  assertEqual("flat entryCostPrice", latest.entryCostPrice, null);
 }
 
 if (previousPrice) {

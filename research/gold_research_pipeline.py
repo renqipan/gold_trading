@@ -1351,6 +1351,8 @@ def overlay_execution_state(
         "pending_entry",
         "pending_exit",
         "entry_blocked_by_drawdown",
+        "entry_price",
+        "entry_date",
     ]
     for column in public_state_columns:
         if column in out:
@@ -1364,10 +1366,22 @@ def overlay_execution_state(
         "raw_signal": "raw_signal",
         "execution_action": "execution_action",
         "exit_reason": "exit_reason",
+        "entry_price": "entry_price",
     }
     for execution_column, signal_column in mapping.items():
         if execution_column in execution_frame:
             out.loc[common_index, signal_column] = execution_frame.loc[common_index, execution_column]
+    active_entry_date: pd.Timestamp | None = None
+    entry_dates = pd.Series(pd.NaT, index=execution_frame.index, dtype="datetime64[ns]")
+    for date, row in execution_frame.iterrows():
+        if float(row.get("position", 0.0)) > 1e-12:
+            if pd.notna(row.get("entry_fill_price", np.nan)):
+                active_entry_date = pd.Timestamp(date)
+            if active_entry_date is not None:
+                entry_dates.loc[date] = active_entry_date
+        else:
+            active_entry_date = None
+    out.loc[common_index, "entry_date"] = entry_dates.loc[common_index]
     for column in [
         "desired_position",
         "pending_entry",
@@ -1561,6 +1575,20 @@ def build_outputs(
     latest = signal_frame.dropna(subset=["gold_close"]).iloc[-1]
     previous = signal_frame.dropna(subset=["gold_close"]).iloc[-2]
     public_risk = asdict(config)
+    has_active_position = float(latest["position"]) > 1e-12
+    active_entry_price = latest.get("entry_price", np.nan)
+    active_entry_date = latest.get("entry_date", None)
+    if has_active_position and pd.notna(active_entry_price) and float(active_entry_price) > 0:
+        entry_fill_price = float(active_entry_price)
+        entry_cost_price = entry_fill_price * (1 + config.realistic_cost_bps / 10000)
+    else:
+        entry_fill_price = None
+        entry_cost_price = None
+    entry_date = (
+        str(pd.Timestamp(active_entry_date).date())
+        if has_active_position and pd.notna(active_entry_date)
+        else None
+    )
 
     latest_json = {
         "asOf": str(latest.name.date()),
@@ -1582,6 +1610,9 @@ def build_outputs(
         "riskHalted": bool(latest.get("entry_blocked_by_drawdown", False)),
         "atrStop": None if pd.isna(latest["atr_stop"]) else float(latest["atr_stop"]),
         "takeProfit": None if pd.isna(latest["tb_take_profit"]) else float(latest["tb_take_profit"]),
+        "entryDate": entry_date,
+        "entryFillPrice": entry_fill_price,
+        "entryCostPrice": entry_cost_price,
         "atrPct": float(latest["atr_pct"]),
         "risk": public_risk,
         "backtestMetrics": backtest_metrics,

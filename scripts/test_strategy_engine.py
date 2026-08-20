@@ -187,9 +187,37 @@ def test_entry_barriers_use_next_open_and_signal_day_atr() -> None:
         write_log=False,
     )
     assert result.iloc[1]["entry_fill_price"] == 110.0
+    assert result.iloc[1]["entry_price"] == 110.0
     assert result.iloc[1]["atr_stop"] == 98.0
     assert result.iloc[1]["tb_take_profit"] == 130.0
     assert result.iloc[1]["position"] > 0.0
+    assert result.iloc[2]["entry_price"] == 110.0
+
+
+def test_active_entry_details_clear_after_position_closes() -> None:
+    frame = execution_frame(4)
+    frame.loc[frame.index[0], ["tb_event", "tb_accepted_event"]] = True
+    frame["atr_stop_enabled"] = True
+    frame.loc[frame.index[2], ["gold_open", "gold_close", "gold_high", "gold_low"]] = [
+        95.0,
+        95.0,
+        96.0,
+        94.0,
+    ]
+    result, _ = backtest_next_open(
+        frame,
+        pd.Series(True, index=frame.index),
+        replace(RiskConfig(), stop_atr_multiple=2.0),
+        cost_bps=0.0,
+        write_log=False,
+    )
+    public = overlay_execution_state(frame, result)
+    assert public.iloc[1]["position"] > 0.0
+    assert public.iloc[1]["entry_date"] == frame.index[1]
+    assert result.iloc[2]["exit_reason"] == "atr_stop_gap"
+    assert public.iloc[2]["position"] == 0.0
+    assert pd.isna(public.iloc[2]["entry_price"])
+    assert pd.isna(public.iloc[2]["entry_date"])
 
 
 def test_hmm_confirmation_resets_after_exit_and_can_be_disabled() -> None:
@@ -593,6 +621,7 @@ if __name__ == "__main__":
     test_long_only_unlevered_config_is_enforced()
     test_signal_executes_only_at_next_open_and_last_signal_remains_pending()
     test_entry_barriers_use_next_open_and_signal_day_atr()
+    test_active_entry_details_clear_after_position_closes()
     test_hmm_confirmation_resets_after_exit_and_can_be_disabled()
     test_double_barrier_is_conservatively_stopped_and_gap_uses_open()
     test_invalid_open_fails_instead_of_using_impossible_intraday_fill()
