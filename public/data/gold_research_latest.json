@@ -7,7 +7,7 @@
     "kind": "confirmed_daily_close",
     "isFinal": true,
     "sessionDate": "2026-08-21",
-    "observedAt": "2026-08-22T01:49:37.375141+00:00",
+    "observedAt": "2026-08-22T06:58:47.078232+00:00",
     "timezone": "Asia/Shanghai",
     "settlementRule": "COMEX session is treated as final after 08:00 Asia/Shanghai on the next calendar day"
   },
@@ -246,7 +246,7 @@
     "cash_yield": "FRED DGS3MO 3-month Treasury yield"
   },
   "dataQuality": {
-    "generatedAt": "2026-08-22T01:49:35Z",
+    "generatedAt": "2026-08-22T06:58:45Z",
     "referenceDate": "2026-08-22",
     "passed": true,
     "assetIdentity": {
