@@ -486,11 +486,15 @@ def test_forward_ledger_is_append_only() -> None:
 
             changed = execution.copy()
             changed.loc[index[0], "strategy_ret"] = 0.02
+            changed.loc[index[0], "benchmark_ret"] = 0.018
+            changed.loc[index[0], "desired_position"] = 0.9
             changed.loc[index[0], "cash_interest"] = 0.001
             revised = update_forward_ledger(changed, RiskConfig(), final_status)
             assert revised["days"] == 2
             frozen = pipeline.json.loads(pipeline.FORWARD_LEDGER.read_text(encoding="utf-8"))
             assert frozen["records"][0]["strategyReturn"] == 0.01
+            assert frozen["records"][0]["benchmarkReturn"] == 0.008
+            assert frozen["records"][0]["recommendedPosition"] == 1.0
             assert frozen["records"][0]["cashInterest"] == 0.0
 
             changed_signal = execution.copy()

@@ -121,11 +121,9 @@ function oldJson(path) {
 function newJson(path) {
   return JSON.parse(fs.readFileSync(path, "utf8"));
 }
-function validateDated(path, revisionFields = []) {
+function validateDateTopology(path) {
   const before = oldJson(path);
   const after = newJson(path);
-  const oldLatest = oldJson("public/data/gold_research_latest.json");
-  const mutableTailDate = oldLatest.priceStatus?.isFinal === false ? oldLatest.asOf : null;
   const oldDates = before.map((row) => row.date);
   const newDates = after.map((row) => row.date);
   if (new Set(newDates).size !== newDates.length || [...newDates].sort().join() !== newDates.join()) {
@@ -138,16 +136,6 @@ function validateDated(path, revisionFields = []) {
       if (oldRow.date >= newMin) throw new Error(`历史中间日期消失：${path} ${oldRow.date}`);
       continue;
     }
-    const newRow = afterByDate.get(oldRow.date);
-    const stableOldRow = Object.fromEntries(
-      Object.entries(oldRow).filter(([key]) => !revisionFields.includes(key)),
-    );
-    const stableNewRow = Object.fromEntries(
-      Object.entries(newRow).filter(([key]) => !revisionFields.includes(key)),
-    );
-    if (JSON.stringify(stableNewRow) !== JSON.stringify(stableOldRow) && oldRow.date !== mutableTailDate) {
-      throw new Error(`历史数据被改写：${path} ${oldRow.date}`);
-    }
   }
   const oldMax = oldDates.at(-1);
   for (const row of after) {
@@ -157,10 +145,11 @@ function validateDated(path, revisionFields = []) {
   }
 }
 
-validateDated("public/data/gold_price_series.json");
-// FRED can publish a missing cash-yield observation after the initial run. It may
-// revise strategy accounting, but never the gold benchmark, dates, or formal ledger.
-validateDated("public/data/gold_backtest.json", ["equity", "drawdown", "position"]);
+// Upstream daily bars and FRED observations may be corrected after publication.
+// Existing public values may follow those corrections, while date topology and the
+// separately validated forward ledger remain append-only.
+validateDateTopology("public/data/gold_price_series.json");
+validateDateTopology("public/data/gold_backtest.json");
 
 const ledgerPath = "public/data/gold_forward_ledger.json";
 const beforeLedger = oldJson(ledgerPath);
