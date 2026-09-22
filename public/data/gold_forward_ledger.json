@@ -654,6 +654,19 @@
       "guide": "持有",
       "pendingEntry": false,
       "pendingExit": false
+    },
+    {
+      "date": "2026-09-21",
+      "strategyReturn": -0.005587133139340117,
+      "benchmarkReturn": -0.007948549559546048,
+      "position": 0.7118113234901683,
+      "recommendedPosition": 0.7118113234901683,
+      "turnover": 0.0,
+      "cashInterest": 0.00024184739571019828,
+      "executionAction": "持有/观望",
+      "guide": "持有",
+      "pendingEntry": false,
+      "pendingExit": false
     }
   ]
 }
