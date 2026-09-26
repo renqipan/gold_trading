@@ -4,10 +4,10 @@
   "assetDetail": "东方财富 101.QO00Y 缓存为历史主序列；AkShare/Sina COMEX GC 同资产族序列负责日常延伸和盘中尾部刷新",
   "price": 4320.3,
   "priceStatus": {
-    "kind": "intraday_snapshot",
-    "isFinal": false,
+    "kind": "confirmed_daily_close",
+    "isFinal": true,
     "sessionDate": "2026-09-25",
-    "observedAt": "2026-09-25T21:34:12.945746+00:00",
+    "observedAt": "2026-09-26T04:56:22.393415+00:00",
     "timezone": "Asia/Shanghai",
     "settlementRule": "COMEX session is treated as final after 08:00 Asia/Shanghai on the next calendar day"
   },
@@ -117,11 +117,11 @@
   },
   "forwardHoldoutMetrics": {
     "start": "2026-07-13",
-    "end": "2026-09-24",
-    "days": 54,
-    "total_return": -0.03870034913639364,
-    "benchmark_return": 0.044405403768098095,
-    "average_position": 0.34459696058759093,
+    "end": "2026-09-25",
+    "days": 55,
+    "total_return": -0.037044746305044396,
+    "benchmark_return": 0.04690131459380842,
+    "average_position": 0.3512200753377527,
     "trade_days": 1,
     "append_only": true,
     "strategy_version": "2026-07-13-v1",
@@ -246,7 +246,7 @@
     "cash_yield": "FRED DGS3MO 3-month Treasury yield"
   },
   "dataQuality": {
-    "generatedAt": "2026-09-25T21:34:10Z",
+    "generatedAt": "2026-09-26T04:56:20Z",
     "referenceDate": "2026-09-26",
     "passed": true,
     "assetIdentity": {
