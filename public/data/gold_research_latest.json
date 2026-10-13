@@ -2,24 +2,24 @@
   "asOf": "2026-10-13",
   "asset": "COMEX 黄金连续合约 QO00Y/GC proxy",
   "assetDetail": "东方财富 101.QO00Y 缓存为历史主序列；AkShare/Sina COMEX GC 同资产族序列负责日常延伸和盘中尾部刷新",
-  "price": 4193.5,
+  "price": 4188.7,
   "priceStatus": {
     "kind": "intraday_snapshot",
     "isFinal": false,
     "sessionDate": "2026-10-13",
-    "observedAt": "2026-10-13T14:09:20.347597+00:00",
+    "observedAt": "2026-10-13T19:58:06.474313+00:00",
     "timezone": "Asia/Shanghai",
     "settlementRule": "COMEX session is treated as final after 08:00 Asia/Shanghai on the next calendar day"
   },
-  "dailyChange": -0.0005243463546010796,
+  "dailyChange": -0.0016683747646399905,
   "isMetaEvent": false,
   "isAcceptedEvent": false,
   "marketStateCode": "s2",
   "marketState": "熊市",
   "guide": "持有",
   "rawSignal": "long",
-  "position": 0.7023059233632253,
-  "recommendedPosition": 0.7023059233632253,
+  "position": 0.7020664206842919,
+  "recommendedPosition": 0.7020664206842919,
   "pendingEntry": false,
   "pendingExit": false,
   "riskHalted": false,
@@ -29,7 +29,7 @@
   "entryFillPrice": 4580.7,
   "entryCostPrice": 4584.364559999999,
   "entryTargetPosition": 0.7210618633205147,
-  "atrPct": 0.018327684000749474,
+  "atrPct": 0.018416897162092584,
   "risk": {
     "train_end_date": "2021-02-23",
     "validation_end_date": "2023-02-27",
@@ -66,16 +66,16 @@
     "execution_model": "t_close_signal_t_plus_1_open_with_intraday_atr_fills",
     "cost_bps": 0.0,
     "sharpe_definition": "annualized_excess_return_over_lagged_haircut_cash_yield",
-    "total_return": 1.8192570574777553,
-    "benchmark_return": 1.286843899113837,
-    "annual_return": 0.32266424274389016,
-    "annual_vol": 0.16540720895570338,
-    "sharpe": 1.5328822132003537,
-    "sortino": 2.6737183609185085,
-    "calmar": 2.1070294908856035,
+    "total_return": 1.816992111967,
+    "benchmark_return": 1.2842263122017714,
+    "annual_return": 0.32237745949273156,
+    "annual_vol": 0.16540970562654247,
+    "sharpe": 1.5315501205626838,
+    "sortino": 2.671585123844426,
+    "calmar": 2.1051567678266596,
     "max_drawdown": -0.15313703208219998,
-    "benchmark_annual_vol": 0.20209674684313392,
-    "benchmark_sharpe": 1.0089621617735767,
+    "benchmark_annual_vol": 0.20209990116328133,
+    "benchmark_sharpe": 1.0074196787770022,
     "benchmark_max_drawdown": -0.26405621561647785,
     "active_day_ratio": 0.9004282655246253,
     "daily_win_rate_when_active": 0.5767991407089151,
@@ -85,26 +85,26 @@
     "turnover": 21.601042292310762,
     "drawdown_scaled_days": 0,
     "cash_interest_earned": 0.04716768140222297,
-    "net_total_return_5bps": 1.7890424823939535,
-    "net_sharpe_5bps": 1.5160574709737158,
+    "net_total_return_5bps": 1.786800947046785,
+    "net_sharpe_5bps": 1.5147244834807208,
     "net_max_drawdown_5bps": -0.1544405551472573,
-    "net_total_return_5bps_without_cash_yield": 1.741553914585845,
-    "cash_yield_return_uplift_5bps": 0.047488567808108506
+    "net_total_return_5bps_without_cash_yield": 1.7393471454066427,
+    "cash_yield_return_uplift_5bps": 0.047453801640142235
   },
   "liveExecutionMetrics": {
     "execution_model": "t_close_signal_t_plus_1_open_with_intraday_atr_fills",
     "cost_bps": 8.0,
     "sharpe_definition": "annualized_excess_return_over_lagged_haircut_cash_yield",
-    "total_return": 1.7710678119839547,
-    "benchmark_return": 1.286843899113837,
-    "annual_return": 0.31652595267093253,
-    "annual_vol": 0.16526257951674203,
-    "sharpe": 1.5059207078080232,
-    "sortino": 2.621097909155794,
-    "calmar": 2.0391801320679024,
+    "total_return": 1.7688402075427225,
+    "benchmark_return": 1.2842263122017714,
+    "annual_return": 0.3162403241876812,
+    "annual_vol": 0.16526505620588017,
+    "sharpe": 1.5045872145011294,
+    "sortino": 2.618963206831132,
+    "calmar": 2.037340005142183,
     "max_drawdown": -0.15522216389483368,
-    "benchmark_annual_vol": 0.20209674684313392,
-    "benchmark_sharpe": 1.0089621617735767,
+    "benchmark_annual_vol": 0.20209990116328133,
+    "benchmark_sharpe": 1.0074196787770022,
     "benchmark_max_drawdown": -0.26405621561647785,
     "active_day_ratio": 0.9004282655246253,
     "daily_win_rate_when_active": 0.5767991407089151,
@@ -162,11 +162,11 @@
     {
       "year": 2026,
       "cost_bps": 8.0,
-      "total_return": 0.18532551351002047,
-      "benchmark_return": -0.03130053130053334,
-      "sharpe": 1.20322001539024,
+      "total_return": 0.18437265469986008,
+      "benchmark_return": -0.032409332409334524,
+      "sharpe": 1.1968990159976927,
       "max_drawdown": -0.15522216389483423,
-      "average_position": 0.44244699351667705,
+      "average_position": 0.44244580785985066,
       "turnover": 6.534954846500808
     }
   ],
@@ -175,36 +175,36 @@
     "cost_stress": [
       {
         "cost_bps": 0.0,
-        "total_return": 1.8192570574777553,
-        "sharpe": 1.5328822132003537,
+        "total_return": 1.816992111967,
+        "sharpe": 1.5315501205626838,
         "max_drawdown": -0.15313703208219998,
         "turnover": 21.601042292310762
       },
       {
         "cost_bps": 5.0,
-        "total_return": 1.7890424823939535,
-        "sharpe": 1.5160574709737158,
+        "total_return": 1.786800947046785,
+        "sharpe": 1.5147244834807208,
         "max_drawdown": -0.1544405551472573,
         "turnover": 21.597058920131815
       },
       {
         "cost_bps": 8.0,
-        "total_return": 1.7710678119839547,
-        "sharpe": 1.5059207078080232,
+        "total_return": 1.7688402075427225,
+        "sharpe": 1.5045872145011294,
         "max_drawdown": -0.15522216389483368,
         "turnover": 21.594671253392942
       },
       {
         "cost_bps": 15.0,
-        "total_return": 1.7295715589094023,
-        "sharpe": 1.4821492812235288,
+        "total_return": 1.7273761273615191,
+        "sharpe": 1.4808146985857333,
         "max_drawdown": -0.1570444446423208,
         "turnover": 21.58910689563697
       },
       {
         "cost_bps": 25.0,
-        "total_return": 1.6713559022761584,
-        "sharpe": 1.4479120101897056,
+        "total_return": 1.6692056353181735,
+        "sharpe": 1.4465760925947029,
         "max_drawdown": -0.15964412617973722,
         "turnover": 21.581174456326213
       }
@@ -217,13 +217,13 @@
       "simulations": 2000,
       "seed": 20260713,
       "total_return": {
-        "p05": 0.6409778713885826,
+        "p05": 0.6397246115572404,
         "median": 1.7627460937889015,
-        "p95": 3.815148834155476
+        "p95": 3.8114717090538335
       },
       "sharpe": {
         "p05": 0.6721288540325285,
-        "median": 1.5042859487362699,
+        "median": 1.5028137730493611,
         "p95": 2.3869585060336087
       },
       "max_drawdown": {
@@ -246,8 +246,8 @@
     "cash_yield": "FRED DGS3MO 3-month Treasury yield"
   },
   "dataQuality": {
-    "generatedAt": "2026-10-13T14:09:18Z",
-    "referenceDate": "2026-10-13",
+    "generatedAt": "2026-10-13T19:58:05Z",
+    "referenceDate": "2026-10-14",
     "passed": true,
     "assetIdentity": {
       "expected": "COMEX gold continuous proxy in USD per troy ounce",
@@ -261,7 +261,7 @@
         "rows": 3346,
         "start": "2013-06-25",
         "end": "2026-10-13",
-        "latestClose": 4193.5,
+        "latestClose": 4188.7,
         "missingClose": 0,
         "invalidOhlcRows": 0
       },
@@ -277,13 +277,13 @@
     "rawAvailability": {
       "gold_close": {
         "lastObserved": "2026-10-13",
-        "ageDays": 0,
+        "ageDays": 1,
         "maxAgeDays": 7,
         "stale": false
       },
       "cash_yield_pct": {
         "lastObserved": "2026-10-08",
-        "ageDays": 5,
+        "ageDays": 6,
         "maxAgeDays": 10,
         "stale": false
       }
